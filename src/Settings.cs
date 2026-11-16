@@ -67,6 +67,8 @@ namespace RealWindows
         public static float glassSmoothness = 0.85f;     // 0-1: glint size (1 = pin-point)
         public static float glassDirt = 0.3f;            // smudges and dust, 0 = spotless
         public static float glassDirtScale = 3f;         // smudges per metre
+        public static bool glassEnvironment = true;      // the glass reflects the scene around the part; false: the painted window is the reflection
+        public static int glassEnvironmentSource = GlassEnvironment.SourceAuto;   // Auto (the game's reflection probe when it is on), Probe, Synthetic (a sky/ground gradient)
 
         // window regions from the hull's textures
         public static int materialMode = 1;              // 0 Off, 1 Assist, 2 Union, 3 Trust
@@ -92,10 +94,11 @@ namespace RealWindows
         public static float sceneDepthEpsilon = 0.15f;
 
         // debug
-        public static int debugMode = 0;                 // 0 off, 1 mask, 2 part IDs, 3 x-ray, 4 interior raw
+        public static int debugMode = 0;                 // 0 off, 1 mask, 2 part IDs, 3 x-ray, 4 interior raw, 5 window verdict, 6 see-through decision, 7 glass reflection
         public static KeyCombo toggleKey = KeyCombo.Parse("Alt+F8");   // switches the whole mod on and off in flight
         public static bool startEnabled = true;          // state at the start of each flight scene
         public static KeyCode debugCycleKey = KeyCode.None;
+        public static KeyCode glassCycleKey = KeyCode.None;   // steps through the glass looks in flight: painted reflection, reflected scene, reflected gradient
         public static KeyCode alignmentDumpKey = KeyCode.None;
         public static bool verboseLogging = false;
         public static float flipY = 0f;                  // 0 auto, 1 force-flip sampling of our textures
@@ -170,6 +173,10 @@ namespace RealWindows
                 F(n, "glassSmoothness", ref glassSmoothness);
                 F(n, "glassDirt", ref glassDirt);
                 F(n, "glassDirtScale", ref glassDirtScale);
+                B(n, "glassEnvironment", ref glassEnvironment);
+                string ges = n.GetValue("glassEnvironmentSource");
+                if (!string.IsNullOrEmpty(ges))
+                    glassEnvironmentSource = GlassEnvironment.ParseSource(ges);
                 string mm = n.GetValue("materialMode");
                 if (!string.IsNullOrEmpty(mm))
                 {
@@ -216,6 +223,7 @@ namespace RealWindows
                     }
                 }
                 debugCycleKey = Key(n, "debugCycleKey", debugCycleKey);
+                glassCycleKey = Key(n, "glassCycleKey", glassCycleKey);
                 string tk = n.GetValue("toggleKey");
                 if (tk != null)
                 {

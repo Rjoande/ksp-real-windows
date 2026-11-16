@@ -5,7 +5,8 @@
 //      the interior probe (Probe.cs), then the window masks (HullMasks.cs).
 //   1. Hull pass      (command buffer, two targets): every nearby part writes
 //      (partId, eyeDepth, window state, reason) and its glass surface (Fresnel,
-//      glint, dirt). partId = this frame's id for parts whose interior is
+//      glint, dirt); with glassEnvironment a third target takes the scene the
+//      glass reflects (GlassEnvironment.cs). partId = this frame's id for parts whose interior is
 //      rendered, 0 for everything else (still occludes). The window state comes
 //      from the baked mask, the author's glass, the per-pixel probe, or solid.
 //   2. Front pass     (command buffer): interior shells, back faces culled,
@@ -65,6 +66,7 @@ namespace RealWindows
 
         private RenderTexture idRT, surfaceRT, frontRT, colorRT;
         private RenderTexture behindRT;   // the next hull surface behind each window pixel (seeThroughWindows)
+        private RenderTexture envRT;      // the scene each glass pixel reflects (glassEnvironment), made when first needed
         private bool behindDrawn;
         // depth cut-outs (seeThroughWindows): per looked-through part, a quad over its windows
         // drawn by the main camera just before that part's hull (Renderer.sortingOrder)
@@ -94,6 +96,7 @@ namespace RealWindows
         private RenderTexture interiorTex, interiorDepthTex;   // what the composite reads this frame: the cache itself, or cache + kerbals
         private const int LayerKerbals = 16, LayerInternal = 20;
         private readonly RenderTargetIdentifier[] hullTargets = new RenderTargetIdentifier[2];
+        private readonly RenderTargetIdentifier[] hullTargetsEnv = new RenderTargetIdentifier[3];
         private int rtW, rtH;
         private bool rtHDR;
 
@@ -167,6 +170,7 @@ namespace RealWindows
         private static readonly int PID_LayerSize = Shader.PropertyToID("_RW_LayerSize");
         private static readonly int PID_BehindEps = Shader.PropertyToID("_RW_BehindEps");
         private static readonly int PID_DrawRect = Shader.PropertyToID("_RW_DrawRect");
+        private static readonly int PID_GlassModel = Shader.PropertyToID("_RW_GlassModel");
         // switched off (toggle key / startEnabled): nothing attached; cleared each
         // frame by the addon while switched on
         public bool suspended = true;
@@ -423,13 +427,26 @@ namespace RealWindows
             }
 
             // 1. hull pass: part id, depth, window mask + glass surface (Fresnel, glint, dirt)
-            hullTargets[0] = idRT;
-            hullTargets[1] = surfaceRT;
-            cbPasses.SetRenderTarget(hullTargets, idRT.depthBuffer);
+            Light sun = Sun.Instance != null ? Sun.Instance.sunLight : null;
+            bool glassEnv = RWSettings.glassEnvironment && envRT != null;
+            if (glassEnv)
+            {
+                hullTargetsEnv[0] = idRT;
+                hullTargetsEnv[1] = surfaceRT;
+                hullTargetsEnv[2] = envRT;
+                cbPasses.SetRenderTarget(hullTargetsEnv, idRT.depthBuffer);
+                GlassEnvironment.Apply(cbPasses, sun);
+            }
+            else
+            {
+                hullTargets[0] = idRT;
+                hullTargets[1] = surfaceRT;
+                cbPasses.SetRenderTarget(hullTargets, idRT.depthBuffer);
+            }
+            cbPasses.SetGlobalFloat(PID_GlassModel, glassEnv ? 1f : 0f);
             cbPasses.ClearRenderTarget(true, true, Color.clear, 1f);
             cbPasses.SetViewProjectionMatrices(view, proj);
             cbPasses.SetGlobalVector("_RW_CamPos", main.transform.position);
-            Light sun = Sun.Instance != null ? Sun.Instance.sunLight : null;
             cbPasses.SetGlobalVector("_RW_SunDir", sun != null ? -sun.transform.forward : Vector3.up);
             cbPasses.SetGlobalFloat("_RW_Smoothness", RWSettings.glassSmoothness);
             cbPasses.SetGlobalFloat("_RW_DirtScale", RWSettings.glassDirtScale);
@@ -637,6 +654,10 @@ namespace RealWindows
         {
             mat.SetTexture("_RW_IdTex", idRT);
             mat.SetTexture("_RW_SurfaceTex", surfaceRT);
+            bool glassEnv = RWSettings.glassEnvironment && envRT != null;
+            mat.SetFloat(PID_GlassModel, glassEnv ? 1f : 0f);
+            if (glassEnv)
+                mat.SetTexture("_RW_EnvTex", envRT);
             Color sunColour = sun != null ? sun.color * sun.intensity : Color.white;
             mat.SetColor("_RW_SunColor", sunColour * RWSettings.glassSpecular);
             mat.SetFloat("_RW_Reflection", RWSettings.glassReflection);
@@ -1454,7 +1475,12 @@ namespace RealWindows
             float scale = Mathf.Clamp(RWSettings.interiorScale, 0.1f, 1f);
             int iw = Mathf.Max(16, Mathf.RoundToInt(w * scale)), ih = Mathf.Max(16, Mathf.RoundToInt(h * scale));
             if (idRT != null && rtW == w && rtH == h && rtHDR == hdr && idRT.IsCreated() && colorRT != null && colorRT.width == iw && colorRT.height == ih)
+            {
+                // the reflected scene's target comes with the setting (it can be switched in flight)
+                if (RWSettings.glassEnvironment && (envRT == null || !envRT.IsCreated()))
+                    MakeEnvRT(w, h);
                 return;
+            }
             ReleaseRTs();
             rtW = w;
             rtH = h;
@@ -1474,7 +1500,23 @@ namespace RealWindows
                 staticDepthRT = MakeRT("RW interior static depth", iw, ih, RenderTextureFormat.Depth, RenderTextureReadWrite.Linear, 24);
                 dynDepthRT = MakeRT("RW interior kerbal depth", iw, ih, RenderTextureFormat.Depth, RenderTextureReadWrite.Linear, 24);
             }
+            if (RWSettings.glassEnvironment)
+                MakeEnvRT(w, h);
             RWLog.Info("render targets {0}x{1}, interior {2}x{3} (hdr={4}, id format {5})", w, h, iw, ih, hdr, idFmt);
+        }
+
+        // Colour only, bright values included (the sky, the sun's side of a planet):
+        // the packed float format where there is one, half the size of ARGBHalf.
+        private void MakeEnvRT(int w, int h)
+        {
+            if (envRT != null)
+            {
+                envRT.Release();
+                UnityEngine.Object.Destroy(envRT);
+            }
+            RenderTextureFormat fmt = SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.RGB111110Float)
+                ? RenderTextureFormat.RGB111110Float : RenderTextureFormat.ARGBHalf;
+            envRT = MakeRT("RW glass reflection", w, h, fmt, RenderTextureReadWrite.Linear, 0);
         }
 
         private static RenderTexture MakeRT(string name, int w, int h, RenderTextureFormat fmt,
@@ -1495,7 +1537,7 @@ namespace RealWindows
 
         private void ReleaseRTs()
         {
-            RenderTexture[] all = { idRT, surfaceRT, frontRT, behindRT, colorRT, staticColorRT, staticDepthRT, dynDepthRT };
+            RenderTexture[] all = { idRT, surfaceRT, envRT, frontRT, behindRT, colorRT, staticColorRT, staticDepthRT, dynDepthRT };
             for (int i = 0; i < all.Length; i++)
             {
                 if (all[i] != null)
@@ -1504,7 +1546,7 @@ namespace RealWindows
                     UnityEngine.Object.Destroy(all[i]);
                 }
             }
-            idRT = surfaceRT = frontRT = behindRT = colorRT = staticColorRT = staticDepthRT = dynDepthRT = null;
+            idRT = surfaceRT = envRT = frontRT = behindRT = colorRT = staticColorRT = staticDepthRT = dynDepthRT = null;
             interiorTex = interiorDepthTex = null;
             staticAt = -1f;
         }

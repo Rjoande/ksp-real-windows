@@ -1,7 +1,10 @@
-// Pass 0, every frame, two targets.
+// Pass 0, every frame, two or three targets.
 // Target 0: R = part id, G = linear eye depth, B = window state, A = debug reason.
 // Target 1, the glass surface: R = Fresnel reflectance, G = sun glint (x light
 // colour in the composite), B = dirt, from the hull's own normal and object space.
+// Target 2 (_RW_GlassModel = 1, glassEnvironment): the scene the glass reflects
+// along the mirrored view direction (RW_Glass.cginc); the glint is then a GGX
+// highlight instead of the Blinn-Phong one.
 //   B = 2    window, trusted (baked mask, or the author's glass sub-mesh)
 //   B = 1    window from the per-pixel probe (the composite still wants an interior behind it)
 //   B = 0.5  solid
@@ -101,6 +104,9 @@ Shader "Hidden/RealWindows/Hull"
             float _RW_SunLit;       // 0 when this part's vessel is in a planet's shadow
             float _RW_Smoothness;
             float _RW_DirtScale;
+            float _RW_GlassModel;   // 1: the glass reflects the scene (target 2) and the sun as a GGX highlight
+
+            #include "RW_Glass.cginc"
 
             struct appdata
             {
@@ -123,6 +129,7 @@ Shader "Hidden/RealWindows/Hull"
             {
                 float4 id : SV_Target0;
                 float4 surface : SV_Target1;
+                float4 env : SV_Target2;
             };
 
             v2f vert(appdata v)
@@ -162,7 +169,7 @@ Shader "Hidden/RealWindows/Hull"
                 return smoothstep(0.45, 0.8, n);
             }
 
-            float4 Surface(v2f i)
+            float4 Surface(v2f i, out float3 env)
             {
                 float3 n = normalize(i.wnormal);
                 float3 v = normalize(_RW_CamPos - i.world);
@@ -170,17 +177,35 @@ Shader "Hidden/RealWindows/Hull"
                 float c = saturate(dot(n, v));
                 float fresnel = 0.04 + 0.96 * pow(1 - c, 5);
                 float3 l = normalize(_RW_SunDir);
-                float3 h = normalize(v + l);
-                float power = exp2(_RW_Smoothness * 11 + 1);
-                float glint = pow(saturate(dot(n, h)), power) * (power + 8) / 25.1327 * saturate(dot(n, l)) * fresnel * 4;
-                return float4(fresnel, min(glint, 16) * _RW_SunLit, Dirt(i.local), 1);
+                float glint;
+                if (_RW_GlassModel > 0.5)
+                {
+                    env = RWEnvironment(reflect(-v, n), 1 - _RW_Smoothness);
+                    glint = RWSunHighlight(n, v, l, 1 - _RW_Smoothness, 0.04);
+                }
+                else
+                {
+                    env = 0;
+                    float3 h = normalize(v + l);
+                    float power = exp2(_RW_Smoothness * 11 + 1);
+                    glint = pow(saturate(dot(n, h)), power) * (power + 8) / 25.1327 * saturate(dot(n, l)) * fresnel * 4;
+                    glint = min(glint, 16);
+                }
+                return float4(fresnel, glint * _RW_SunLit, Dirt(i.local), 1);
             }
 
             targets Out(float a, float b, float state, float reason, v2f i)
             {
                 targets t;
                 t.id = float4(a, b, state, reason);
-                t.surface = state > 0.75 ? Surface(i) : float4(0, 0, 0, 1);
+                t.surface = float4(0, 0, 0, 1);
+                t.env = float4(0, 0, 0, 1);
+                if (state > 0.75)
+                {
+                    float3 env;
+                    t.surface = Surface(i, env);
+                    t.env = float4(env, 1);
+                }
                 return t;
             }
 

@@ -391,7 +391,7 @@ namespace RealWindows
         // debug
         // ------------------------------------------------------------------
 
-        private static readonly string[] DebugNames = { "off", "window mask", "part IDs", "x-ray (alignment check)", "interior only", "window verdict", "see-through decision" };
+        private static readonly string[] DebugNames = { "off", "window mask", "part IDs", "x-ray (alignment check)", "interior only", "window verdict", "see-through decision", "glass reflection" };
 
         private void HandleKeys()
         {
@@ -399,6 +399,22 @@ namespace RealWindows
             {
                 RWSettings.debugMode = (RWSettings.debugMode + 1) % DebugNames.Length;
                 ScreenMessages.PostScreenMessage("RealWindows debug: " + DebugNames[RWSettings.debugMode], 2f, ScreenMessageStyle.UPPER_CENTER);
+            }
+            if (RWSettings.glassCycleKey != KeyCode.None && Input.GetKeyDown(RWSettings.glassCycleKey))
+            {
+                // painted reflection -> reflected scene (source Auto) -> reflected gradient -> ...
+                if (!RWSettings.glassEnvironment)
+                {
+                    RWSettings.glassEnvironment = true;
+                    RWSettings.glassEnvironmentSource = GlassEnvironment.SourceAuto;
+                }
+                else if (RWSettings.glassEnvironmentSource != GlassEnvironment.SourceSynthetic)
+                    RWSettings.glassEnvironmentSource = GlassEnvironment.SourceSynthetic;
+                else
+                    RWSettings.glassEnvironment = false;
+                ScreenMessages.PostScreenMessage("RealWindows glass: " + (RWSettings.glassEnvironment
+                    ? "reflects the scene (" + GlassEnvironment.SourceName(RWSettings.glassEnvironmentSource) + ")"
+                    : "painted window as the reflection"), 2f, ScreenMessageStyle.UPPER_CENTER);
             }
             if (RWSettings.alignmentDumpKey != KeyCode.None && Input.GetKeyDown(RWSettings.alignmentDumpKey))
                 DumpAlignment();

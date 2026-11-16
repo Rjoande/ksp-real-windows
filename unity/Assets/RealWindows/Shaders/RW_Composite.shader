@@ -16,6 +16,13 @@
 // reflection; smudges cloud it a little; the sun leaves a glint on top. Output is
 // premultiplied (Blend One OneMinusSrcAlpha) so the glint can add light.
 //
+// Reflective glass (_RW_GlassModel, glassEnvironment): the reflection is the scene
+// around the part (_RW_EnvTex from the hull pass) instead of the painted window.
+// With t0 = transmission x (1 - 0.6 dirt) and F = Fresnel x glassReflection:
+//   (interior x tint x t0 + painted window x (1 - t0)) x (1 - F) + (scene x F + glint) x (1 - 0.7 dirt)
+// and through a cut-out the bracket is the scene behind x t0. Facing the camera this
+// is the look above; towards grazing angles the painted window gives way to the scene.
+//
 // See-through (_RW_SeeThrough): where a trusted window's view leaves the cabin
 // before meeting an interior surface (out through its far window), the hull layer
 // behind the window (_RW_BehindTex) decides: another part's window drawn in the same
@@ -30,6 +37,7 @@
 //            the probe / cyan candidate region rejected, no IVA opening / blue solid)
 // _RW_Debug: 0 normal, 1 window mask (yellow shown / red hull-only), 2 part ids, 3 x-ray (interior wherever
 // the part matches - alignment check), 4 interior colour only.
+// _RW_Debug: 7 what the glass adds on its own, over black: the reflected scene x Fresnel and the glint.
 Shader "Hidden/RealWindows/Composite"
 {
     SubShader
@@ -114,7 +122,7 @@ Shader "Hidden/RealWindows/Composite"
                     float3 c = tex2Dlod(_RW_InteriorTex, float4(uv, 0, 0)).rgb;
                     return PM(float4(c, same ? 0.75 : 0));
                 }
-                if (_RW_Debug > 5.5)
+                if (_RW_Debug > 5.5 && _RW_Debug < 6.5)
                 {
                     // see-through decision per window pixel (ClassifyEx's rule)
                     float br;
@@ -132,7 +140,7 @@ Shader "Hidden/RealWindows/Composite"
                                :          float3(1, 1, 0);            // probe window, no interior behind: yellow
                     return PM(float4(col, 0.6));
                 }
-                if (_RW_Debug > 4.5)
+                if (_RW_Debug > 4.5 && _RW_Debug < 6.5)
                 {
                     // verdict per hull pixel; clear = no probe
                     float4 h = tex2Dlod(_RW_IdTex, float4(uv, 0, 0));
@@ -142,7 +150,7 @@ Shader "Hidden/RealWindows/Composite"
                     if (h.w > 1.5 && h.w < 2.5) return PM(float4(0, 0.9, 1, 0.6));    // candidate region, rejected
                     return PM(float4(0.2, 0.4, 1, 0.5));
                 }
-                if (_RW_Debug > 3.5)
+                if (_RW_Debug > 3.5 && _RW_Debug < 6.5)
                 {
                     float4 c = tex2Dlod(_RW_InteriorTex, float4(uv, 0, 0));
                     return float4(c.rgb, 1);
@@ -180,7 +188,7 @@ Shader "Hidden/RealWindows/Composite"
                 float show = m > 0 ? mk.y / m : 0;
                 float hole = m > 0 ? mk.z / m : 0;
 
-                if (_RW_Debug > 0.5)
+                if (_RW_Debug > 0.5 && _RW_Debug < 6.5)
                 {
                     // yellow = window shown; red = hull says window but no matching interior behind it
                     float hm = tex2Dlod(_RW_IdTex, float4(uv, 0, 0)).b > 0.75 ? 1 : 0;
@@ -190,6 +198,22 @@ Shader "Hidden/RealWindows/Composite"
                 if (m <= 0) return float4(0, 0, 0, 0);
                 float4 s = tex2Dlod(_RW_SurfaceTex, float4(uv, 0, 0));
                 float dirt = saturate(s.b * _RW_Dirt);
+                if (_RW_GlassModel > 0.5)
+                {
+                    float f = saturate(s.r * _RW_Reflection);
+                    float t0 = _RW_Transmission * (1 - dirt * 0.6);
+                    float3 env = tex2Dlod(_RW_EnvTex, float4(uv, 0, 0)).rgb;
+                    float3 gloss = (env * f + _RW_SunColor.rgb * s.g) * (1 - dirt * 0.7);
+                    if (_RW_Debug > 6.5)
+                        return float4(gloss * m, m);
+                    float3 inside = tex2Dlod(_RW_InteriorTex, float4(uv, 0, 0)).rgb * show * _RW_Tint.rgb;
+                    // what stays of the picture underneath: the painted window's share,
+                    // or through a cut-out the scene's
+                    float under = lerp(1 - t0, t0, hole) * (1 - f);
+                    return float4((inside * t0 * (1 - f) + gloss) * m, m * (1 - under));
+                }
+                if (_RW_Debug > 6.5)
+                    return float4(_RW_SunColor.rgb * s.g * (1 - dirt * 0.7) * m, m);
                 float t = _RW_Transmission * (1 - saturate(s.r * _RW_Reflection)) * (1 - dirt * 0.6);
                 float a = m * t;
                 float3 interior = tex2Dlod(_RW_InteriorTex, float4(uv, 0, 0)).rgb * show * _RW_Tint.rgb;

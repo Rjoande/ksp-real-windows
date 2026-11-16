@@ -9,6 +9,8 @@ sampler2D _RW_FrontTex;
 sampler2D _RW_InteriorTex;
 sampler2D _RW_SurfaceTex;
 sampler2D _RW_BehindTex;
+sampler2D _RW_EnvTex;     // the scene each glass pixel reflects (hull pass, target 2)
+float _RW_GlassModel;     // 1: reflective glass (glassEnvironment), 0: the painted window is the reflection
 float _RW_SeeThrough;
 float4 _RW_SunColor;
 float _RW_Reflection;
