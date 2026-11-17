@@ -391,7 +391,7 @@ namespace RealWindows
         // debug
         // ------------------------------------------------------------------
 
-        private static readonly string[] DebugNames = { "off", "window mask", "part IDs", "x-ray (alignment check)", "interior only", "window verdict", "see-through decision", "glass reflection" };
+        private static readonly string[] DebugNames = { "off", "window mask", "part IDs", "x-ray (alignment check)", "interior only", "window verdict", "see-through decision", "glass reflection", "glass shadow" };
 
         private void HandleKeys()
         {

@@ -11,6 +11,8 @@ sampler2D _RW_SurfaceTex;
 sampler2D _RW_BehindTex;
 sampler2D _RW_EnvTex;     // the scene each glass pixel reflects (hull pass, target 2)
 float _RW_GlassModel;     // 1: reflective glass (glassEnvironment), 0: the painted window is the reflection
+sampler2D _RW_SunShadowTex;   // the sun's screen-space shadow mask for this camera render (global), white where there is none
+float _RW_SunShadowFloor;     // what that mask holds in full shade: 1 - the sun's shadow strength
 float _RW_SeeThrough;
 float4 _RW_SunColor;
 float _RW_Reflection;

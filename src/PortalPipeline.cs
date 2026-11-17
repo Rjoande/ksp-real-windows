@@ -251,6 +251,7 @@ namespace RealWindows
             if (matCover != null) UnityEngine.Object.Destroy(matCover);
             Detach();
             DetachInside();
+            GlassShadows.Detach();
             RestoreDepthMode();
             for (int i = 0; i < allInteriors.Count; i++)
             {
@@ -279,6 +280,7 @@ namespace RealWindows
             suspended = true;
             Detach();
             DetachInside();
+            GlassShadows.Detach();
             RestoreDepthMode();
             for (int i = 0; i < allInteriors.Count; i++)
             {
@@ -371,6 +373,9 @@ namespace RealWindows
                 Attach();
                 AttachInside();
             }
+            // the sun's shadow on the glass, for the composite of the render about to start
+            GlassShadows.BeginFrame(Sun.Instance != null ? Sun.Instance.sunLight : null,
+                !suspended && RWSettings.glassEnvironment);
         }
 
         private bool RenderPasses()

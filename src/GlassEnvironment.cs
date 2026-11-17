@@ -73,6 +73,8 @@ namespace RealWindows
                 lastUsed = used;
                 if (cube != null)
                     RWLog.Info("glass reflects the reflection probe ({0}px cube map)", cube.width);
+                else if (RWSettings.glassEnvironmentSource == SourceSynthetic)
+                    RWLog.Info("glass reflects the sky/ground gradient (source Synthetic)");
                 else
                     RWLog.Info("glass reflects the sky/ground gradient (source {0}, reflection probe {1})",
                         SourceName(RWSettings.glassEnvironmentSource),

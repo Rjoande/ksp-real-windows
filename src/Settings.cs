@@ -94,7 +94,7 @@ namespace RealWindows
         public static float sceneDepthEpsilon = 0.15f;
 
         // debug
-        public static int debugMode = 0;                 // 0 off, 1 mask, 2 part IDs, 3 x-ray, 4 interior raw, 5 window verdict, 6 see-through decision, 7 glass reflection
+        public static int debugMode = 0;                 // 0 off, 1 mask, 2 part IDs, 3 x-ray, 4 interior raw, 5 window verdict, 6 see-through decision, 7 glass reflection, 8 glass shadow
         public static KeyCombo toggleKey = KeyCombo.Parse("Alt+F8");   // switches the whole mod on and off in flight
         public static bool startEnabled = true;          // state at the start of each flight scene
         public static KeyCode debugCycleKey = KeyCode.None;
