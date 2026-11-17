@@ -61,6 +61,7 @@ namespace RealWindows
             if (pipeline != null)
                 pipeline.Dispose();
             pipeline = null;
+            FrameLog.Unhook();
         }
 
         // ------------------------------------------------------------------
@@ -391,7 +392,7 @@ namespace RealWindows
         // debug
         // ------------------------------------------------------------------
 
-        private static readonly string[] DebugNames = { "off", "window mask", "part IDs", "x-ray (alignment check)", "interior only", "window verdict", "see-through decision" };
+        private static readonly string[] DebugNames = { "off", "window mask", "part IDs", "x-ray (alignment check)", "interior only", "window verdict", "see-through decision", "scene depth" };
 
         private void HandleKeys()
         {
@@ -399,6 +400,19 @@ namespace RealWindows
             {
                 RWSettings.debugMode = (RWSettings.debugMode + 1) % DebugNames.Length;
                 ScreenMessages.PostScreenMessage("RealWindows debug: " + DebugNames[RWSettings.debugMode], 2f, ScreenMessageStyle.UPPER_CENTER);
+            }
+            if (RWSettings.holeCycleKey != KeyCode.None && Input.GetKeyDown(RWSettings.holeCycleKey))
+            {
+                // true holes on <-> off (Auto, the setting's default, is left behind)
+                RWSettings.seeThroughDepth = RWSettings.seeThroughDepth == RWSettings.HolesOn ? RWSettings.HolesOff : RWSettings.HolesOn;
+                ScreenMessages.PostScreenMessage("RealWindows cut-outs: " + (RWSettings.seeThroughDepth == RWSettings.HolesOn
+                    ? "true holes (the scene behind keeps its depth)"
+                    : "plain (the pane's depth stays)"), 2f, ScreenMessageStyle.UPPER_CENTER);
+            }
+            if (RWSettings.frameLogKey != KeyCode.None && Input.GetKeyDown(RWSettings.frameLogKey))
+            {
+                FrameLog.Arm(pipeline);
+                ScreenMessages.PostScreenMessage("RealWindows: this frame's cameras and command buffers written to the log", 2f, ScreenMessageStyle.UPPER_CENTER);
             }
             if (RWSettings.alignmentDumpKey != KeyCode.None && Input.GetKeyDown(RWSettings.alignmentDumpKey))
                 DumpAlignment();
