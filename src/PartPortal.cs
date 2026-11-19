@@ -23,6 +23,7 @@ namespace RealWindows
         public readonly bool hasIva;     // part config has an INTERNAL
         public readonly bool excluded;
         public readonly bool rootSpins;  // Kerbalism GravityRing: the whole interior root turns with the ring
+        public readonly bool isKerbal;   // an EVA kerbal: an occluder whose meshes change and animate
         private readonly ModuleRealWindows toggle; // the part menu's Transparent/Opaque switch, if patched in
 
         // exterior (all parts): drawn into the hull ID pass
@@ -36,6 +37,7 @@ namespace RealWindows
         public readonly List<Renderer> glassRenderers = new List<Renderer>();      // only transparent (and depth-mask) materials, not props or kerbals: the IVA's window glass
         public readonly List<Renderer> propRenderers = new List<Renderer>();       // props (InternalProp), left out while the windows are small on screen
         public readonly List<Renderer> kerbalRenderers = new List<Renderer>();     // crew, cached instead of drawn every frame while the windows are small
+        public readonly List<Renderer> nonPropRenderers = new List<Renderer>();    // everything but props (shell, glass, masks, crew)
         public readonly List<DrawItem> interiorShell = new List<DrawItem>();       // opaque, no kerbals or props: front pass and probe bake
         public readonly List<Renderer> nonKerbalRenderers = new List<Renderer>();  // everything but the crew (shell, props)
         // motion: an interior whose shell moves (a spinning ring) leaves the cached
@@ -60,6 +62,7 @@ namespace RealWindows
         public int group;
         public float distance;
         public Rect screenArea;          // viewport area of its windows (whole screen when the camera is inside)
+        public bool hullInView = true;   // this frame: its hull overlaps some window on screen (drawn in the hull passes)
         public bool parkedHidden;        // forceRenderingOff held outside our passes
 
         // crew (or anything else on the kerbals layer) in the interior: drawn every frame
@@ -101,6 +104,8 @@ namespace RealWindows
                     continue;
                 if (pm.moduleName == "GravityRing")
                     rootSpins = true;
+                if (pm is KerbalEVA)
+                    isKerbal = true;
                 if (toggle == null)
                     toggle = pm as ModuleRealWindows;
             }
@@ -210,8 +215,9 @@ namespace RealWindows
         {
             if (now < nextExteriorScan)
                 return;
-            // crewed parts rescan often (variants, flags); the rest only occlude
-            nextExteriorScan = now + (hasIva ? 5f : 20f) + UnityEngine.Random.value; // stagger
+            // crewed parts rescan often (variants, flags); the rest only occlude.
+            // EVA kerbals every second: helmets, suits and visors come and go
+            nextExteriorScan = now + (isKerbal ? 1f : hasIva ? 5f : 20f) + UnityEngine.Random.value * (isKerbal ? 0.2f : 1f); // stagger
             exterior.Clear();
             if (hasIva && !excluded)
                 CollectFlagRenderers();
@@ -234,7 +240,11 @@ namespace RealWindows
                     // Transparent sub-meshes of IVA parts are usually the author's glass:
                     // they belong to the part's surface for the ID test. On other parts
                     // they are effects/decals - skip.
-                    bool transparent = IsTransparent(m);
+                    // An EVA kerbal's suit can sit in the alpha-test queue (2450), which
+                    // the queue test counts as transparent: the kerbal then wasn't in the
+                    // hull pass, and the window behind showed through it. For kerbals only
+                    // the shader decides (the helmet visor is still skipped).
+                    bool transparent = isKerbal ? IsTransparentShader(m) : IsTransparent(m);
                     if (transparent && !hasIva)
                         continue;
                     DrawItem di = new DrawItem(r, s);
@@ -348,6 +358,8 @@ namespace RealWindows
                     kerbalRenderers.Add(r);
                 else if (prop)
                     propRenderers.Add(r);
+                if (!prop)
+                    nonPropRenderers.Add(r);
                 if (!kerbal && shellProbe == null && r is MeshRenderer)
                     shellProbe = r;
                 int subs = SubMeshCount(r);
@@ -435,7 +447,14 @@ namespace RealWindows
                 }
             }
             Transform root = model.transform;
-            Vector3 rf = root.forward, ru = root.up;
+            // the root's turn relative to its part, through this frame's map: none for
+            // an ordinary interior, however internal space moves (it follows the active
+            // vessel, an EVA kerbal turning included); a ring's spin where KSP's own
+            // map is used (rootSpins)
+            Quaternion rel = part != null
+                ? Quaternion.Inverse(LiveMap().rot * part.transform.rotation * Alignment.PartToInterior) * root.rotation
+                : root.rotation;
+            Vector3 rf = rel * Vector3.forward, ru = rel * Vector3.up;
             Vector4 s = new Vector4(rf.x + 0.5f * ru.x, rf.y + 0.5f * ru.y, rf.z + 0.5f * ru.z, ru.y - rf.x);
             for (int k = 0; k < motionProbe.Count; k++)
             {
@@ -480,6 +499,7 @@ namespace RealWindows
             kerbalRenderers.Clear();
             interiorShell.Clear();
             nonKerbalRenderers.Clear();
+            nonPropRenderers.Clear();
             motionProbe.Clear();
             motionInit = false;
             shellProbe = null;
@@ -536,6 +556,11 @@ namespace RealWindows
         {
             if (m.renderQueue >= 2450)
                 return true;
+            return IsTransparentShader(m);
+        }
+
+        public static bool IsTransparentShader(Material m)
+        {
             string n = m.shader != null ? m.shader.name : "";
             return n.IndexOf("Transparent", StringComparison.OrdinalIgnoreCase) >= 0
                 || n.IndexOf("Translucent", StringComparison.OrdinalIgnoreCase) >= 0

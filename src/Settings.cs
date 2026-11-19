@@ -53,7 +53,10 @@ namespace RealWindows
         public static bool hideDepthMasks = true;        // interior depth masks (FreeIva hatch doorways) skipped in our render
         public static bool hideInteriorGlass = true;     // the IVA's own transparent window glass skipped in our render
         public static bool scissorPasses = true;         // id/depth passes drawn only over the windows' screen area
-        public static bool bindCameraTarget = true;      // the composite binds the camera's target itself (another buffer before it may leave its own bound)
+        public static bool fitInteriorShadows = true;    // interior shadow distance cut to the interiors drawn
+        public static bool cullOccludersPerWindow = true; // hull passes draw only parts that overlap some window on screen
+        public static bool bakeKerbals = true;          // EVA kerbals' skinned meshes baked in this frame's pose for the hull pass
+        public static bool bindCameraTarget = true;     // the composite binds the camera's target itself (another buffer before it may leave its own bound)
         public static float interiorScale = 1f;          // interior image resolution relative to the screen (0.1-1)
         public static float propDetailPixels = 160f;     // props drawn while the windows are at least this big on screen (px, largest side; 0 = always)
         public static float crewDetailPixels = 48f;      // crew animated every frame from this size; smaller, it is cached with the cabin (0 = always)
@@ -156,6 +159,9 @@ namespace RealWindows
                 B(n, "hideInteriorGlass", ref hideInteriorGlass);
                 B(n, "scissorPasses", ref scissorPasses);
                 B(n, "bindCameraTarget", ref bindCameraTarget);
+                B(n, "bakeKerbals", ref bakeKerbals);
+                B(n, "fitInteriorShadows", ref fitInteriorShadows);
+                B(n, "cullOccludersPerWindow", ref cullOccludersPerWindow);
                 F(n, "interiorScale", ref interiorScale);
                 F(n, "propDetailPixels", ref propDetailPixels);
                 F(n, "crewDetailPixels", ref crewDetailPixels);
