@@ -22,10 +22,11 @@ namespace RealWindows
 
         private static bool InActiveCrew(Kerbal crew)
         {
-            for (int i = 0; i < KerbalPortraitGallery.Instance.ActiveCrewItems.Count; ++i)
+            // identity, not name: two same-named kerbals must not count for each other
+            var items = KerbalPortraitGallery.Instance.ActiveCrewItems;
+            for (int i = 0; i < items.Count; ++i)
             {
-                var item = KerbalPortraitGallery.Instance.ActiveCrewItems[i];
-                if (item.kerbal != null && item.kerbal.name == crew.name)
+                if (items[i].kerbal == crew)
                     return true;
             }
             return false;
@@ -36,10 +37,17 @@ namespace RealWindows
             kerbal.InPart = null;
             kerbal.SetVisibleInPortrait(false);
             kerbal.state = Kerbal.States.NO_SIGNAL;
-            for (int i = KerbalPortraitGallery.Instance.ActiveCrew.Count - 1; i >= 0; i--)
+            // Unregister from the gallery's live active-crew list, by identity.
+            // Not the obsolete ActiveCrew property: its getter returns a fresh
+            // copy on every access, so removing from it did nothing, the stale
+            // entry survived, and SetActivePortraitsForVessel re-spawned the
+            // portrait on the next gallery refresh (vessel switch, vessel
+            // modify such as a decoupling, camera change).
+            var items = KerbalPortraitGallery.Instance.ActiveCrewItems;
+            for (int i = items.Count - 1; i >= 0; i--)
             {
-                if (KerbalPortraitGallery.Instance.ActiveCrew[i].crewMemberName == kerbal.crewMemberName)
-                    KerbalPortraitGallery.Instance.ActiveCrew.RemoveAt(i);
+                if (items[i].kerbal == kerbal)
+                    items.RemoveAt(i);
             }
             KerbalPortraitGallery.Instance.DespawnInactivePortraits();
             KerbalPortraitGallery.Instance.DespawnPortrait(kerbal);
@@ -79,7 +87,9 @@ namespace RealWindows
                         if (k.InPart != part || !HasPortrait(k))
                             RestorePortrait(part, k);
                     }
-                    else if (k.InPart != null || HasPortrait(k))
+                    // also a kerbal still in the gallery's live list with no portrait:
+                    // the next gallery refresh would spawn a static-noise one for it
+                    else if (k.InPart != null || HasPortrait(k) || InActiveCrew(k))
                     {
                         DestroyPortrait(k);
                     }

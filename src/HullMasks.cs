@@ -13,10 +13,13 @@
 // its other textures, and uses the probe per pixel only when nothing else on
 // the part knows (PortalPipeline). Sub-meshes with no colour map have no mask
 // and use the probe per pixel. Sub-meshes whose UVs run outside 0..1 are drawn
-// once per UV tile they touch, shifted into 0..1; the bake blends with max, so
-// a texel shared by several hull points is open if any of them is, and the mask
-// wraps (Repeat) when sampled. Only beyond `maxUvTiles` tiles does a sub-mesh go
-// without a mask. A lightmap/gloss mask that looked and found no window keeps
+// once per UV tile their triangles touch, shifted into 0..1; the bake blends
+// with max, so a texel shared by several hull points is open if any of them is,
+// and the mask wraps (Repeat) when sampled. Counted are the distinct tiles
+// touched, not the bounding grid (islands far apart in UV space touch few
+// tiles even when their box spans many); only beyond `maxUvTiles` distinct
+// tiles does a sub-mesh go without a mask. A lightmap/gloss mask that looked
+// and found no window keeps
 // the sub-mesh solid, and so does a window-named mesh whose islands were all
 // rejected.
 
@@ -43,7 +46,10 @@ namespace RealWindows
     public static class HullMasks
     {
         private static readonly Dictionary<string, MaskData> cache = new Dictionary<string, MaskData>();
-        private static readonly Dictionary<Mesh, RectInt> uvTiles = new Dictionary<Mesh, RectInt>();
+        // The UV tiles each mesh's triangles touch; a cached null means the mesh
+        // touches more than maxUvTiles tiles, so it gets no mask.
+        private static readonly Dictionary<Mesh, List<long>> uvTiles = new Dictionary<Mesh, List<long>>();
+        private static readonly List<long> OneZero = new List<long> { Pack(0, 0) };
 
         private static readonly int PID_ProbeTex = Shader.PropertyToID("_RW_ProbeTex");
         private static readonly int PID_WorldToProbe = Shader.PropertyToID("_RW_WorldToProbe");
@@ -94,7 +100,7 @@ namespace RealWindows
         {
             if (g == null) return "no material info";
             if (r == null) return "no renderer";
-            if (!UvMaskable(r)) return "UVs spread over more than " + RWSettings.maxUvTiles + " tiles (per-pixel probe, or solid if the part has other windows)";
+            if (!UvMaskable(r)) return "UVs touch more than " + RWSettings.maxUvTiles + " tiles (per-pixel probe, or solid if the part has other windows)";
             if (g.albedo == null) return "no colour map (per-pixel probe, or solid if the part has other windows)";
             if (RWSettings.materialMode == 0) return "materialMode Off";
             return "unknown";
@@ -105,43 +111,82 @@ namespace RealWindows
             return t != null ? t.GetInstanceID() : 0;
         }
 
-        // The UV tiles a mesh touches: [x0..x1] x [y0..y1], (0,0,0,0) for UVs in 0..1.
-        private static bool UvTiles(Renderer r, out RectInt tiles)
+        // The UV tiles the mesh's triangles touch: for each triangle the box of
+        // its vertices' tiles (UV interpolation stays inside it, so no other
+        // tile can receive a fragment), unioned over the mesh. Packed (x << 32 | y).
+        // A cached null means the mesh touches more than maxUvTiles tiles;
+        // {(0,0)} when the mesh can't be read or has no UVs, as before.
+        private static bool UvTiles(Renderer r, out List<long> tiles)
         {
-            tiles = new RectInt(0, 0, 0, 0);
+            tiles = null;
             SkinnedMeshRenderer smr = r as SkinnedMeshRenderer;
             MeshFilter mf = smr == null ? r.GetComponent<MeshFilter>() : null;
             Mesh mesh = smr != null ? smr.sharedMesh : mf != null ? mf.sharedMesh : null;
             if (mesh == null)
                 return false;
             if (uvTiles.TryGetValue(mesh, out tiles))
-                return true;
-            tiles = new RectInt(0, 0, 0, 0);
-            if (mesh.isReadable)
+                return tiles != null;
+            if (!mesh.isReadable)
             {
-                Vector2[] uv = mesh.uv;
-                if (uv.Length > 0)
+                tiles = OneZero;
+                uvTiles[mesh] = tiles;
+                return true;
+            }
+            Vector2[] uv = mesh.uv;
+            if (uv.Length == 0)
+            {
+                tiles = OneZero;
+                uvTiles[mesh] = tiles;
+                return true;
+            }
+            int cap = RWSettings.maxUvTiles;
+            var touched = new HashSet<long>(cap + 1);
+            int[] tris = null;
+            for (int s = 0; s < mesh.subMeshCount; s++)
+            {
+                tris = mesh.GetTriangles(s);
+                for (int i = 0; i < tris.Length; i += 3)
                 {
-                    float x0 = float.MaxValue, y0 = float.MaxValue, x1 = float.MinValue, y1 = float.MinValue;
-                    for (int i = 0; i < uv.Length; i++)
-                    {
-                        x0 = Mathf.Min(x0, uv[i].x); x1 = Mathf.Max(x1, uv[i].x);
-                        y0 = Mathf.Min(y0, uv[i].y); y1 = Mathf.Max(y1, uv[i].y);
-                    }
-                    int tx0 = Mathf.FloorToInt(x0 + 0.001f), ty0 = Mathf.FloorToInt(y0 + 0.001f);
-                    int tx1 = Mathf.Max(tx0, Mathf.CeilToInt(x1 - 0.001f) - 1), ty1 = Mathf.Max(ty0, Mathf.CeilToInt(y1 - 0.001f) - 1);
-                    // RectInt as min corner + (count - 1)
-                    tiles = new RectInt(tx0, ty0, tx1 - tx0, ty1 - ty0);
+                    int x0 = TileX(uv[tris[i]]), x1 = x0;
+                    int y0 = TileY(uv[tris[i]]), y1 = y0;
+                    int a = tris[i + 1], b = tris[i + 2], tx, ty;
+                    tx = TileX(uv[a]); x0 = Mathf.Min(x0, tx); x1 = Mathf.Max(x1, tx);
+                    ty = TileY(uv[a]); y0 = Mathf.Min(y0, ty); y1 = Mathf.Max(y1, ty);
+                    tx = TileX(uv[b]); x0 = Mathf.Min(x0, tx); x1 = Mathf.Max(x1, tx);
+                    ty = TileY(uv[b]); y0 = Mathf.Min(y0, ty); y1 = Mathf.Max(y1, ty);
+                    for (int y = y0; y <= y1; y++)
+                        for (int x = x0; x <= x1; x++)
+                            if (touched.Add(Pack(x, y)) && touched.Count > cap)
+                            {
+                                uvTiles[mesh] = null;
+                                return false;
+                            }
                 }
             }
+            tiles = new List<long>(touched);
             uvTiles[mesh] = tiles;
             return true;
         }
 
+        private static int TileX(Vector2 v)
+        {
+            return Mathf.FloorToInt(v.x + 0.001f);
+        }
+
+        private static int TileY(Vector2 v)
+        {
+            return Mathf.FloorToInt(v.y + 0.001f);
+        }
+
+        private static long Pack(int x, int y)
+        {
+            return ((long)x << 32) | (uint)y;
+        }
+
         private static bool UvMaskable(Renderer r)
         {
-            RectInt t;
-            return UvTiles(r, out t) && (t.width + 1) * (t.height + 1) <= RWSettings.maxUvTiles;
+            List<long> t;
+            return UvTiles(r, out t) && t.Count <= RWSettings.maxUvTiles;
         }
 
         // Bakes the first unfinished mask of this part. False if none is left.
@@ -196,16 +241,20 @@ namespace RealWindows
                     cb.SetGlobalFloat(PID_HasLight, g.light != null ? 1f : 0f);
                     cb.SetGlobalTexture(PID_LightTex, g.light != null ? g.light : Texture2D.blackTexture);
                     cb.SetGlobalVector(PID_LightST, g.lightST);
-                    RectInt tiles;
-                    UvTiles(d.r, out tiles);
-                    for (int ty = tiles.y; ty <= tiles.y + tiles.height; ty++)
-                        for (int tx = tiles.x; tx <= tiles.x + tiles.width; tx++)
-                        {
-                            if (tx != 0 || ty != 0)
-                                mask.tiled = true;
-                            cb.SetGlobalVector(PID_UvOffset, new Vector4(-tx, -ty, 0, 0));
-                            cb.DrawRenderer(d.r, hullMat, d.sub, 1);
-                        }
+                    // one draw per touched tile; the others would be no-ops
+                    List<long> tiles;
+                    if (!UvTiles(d.r, out tiles))
+                        tiles = OneZero; // can't happen: only maskable sub-meshes get here
+                    for (int t = 0; t < tiles.Count; t++)
+                    {
+                        long tl = tiles[t];
+                        int tx = (int)(tl >> 32);
+                        int ty = (int)(tl & 0xFFFFFFFF);
+                        if (tx != 0 || ty != 0)
+                            mask.tiled = true;
+                        cb.SetGlobalVector(PID_UvOffset, new Vector4(-tx, -ty, 0, 0));
+                        cb.DrawRenderer(d.r, hullMat, d.sub, 1);
+                    }
                 }
                 Graphics.ExecuteCommandBuffer(cb);
             }

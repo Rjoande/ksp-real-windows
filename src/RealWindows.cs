@@ -207,6 +207,8 @@ namespace RealWindows
                     SwitchOff();
                 ScreenMessages.PostScreenMessage("Real Windows " + (switchedOn ? "on" : "off"), 2f, ScreenMessageStyle.UPPER_CENTER);
                 RWLog.Info("switched {0}", switchedOn ? "on" : "off");
+                if (switchedOn && RWSettings.verboseLogging && pipeline != null)
+                    pipeline.diagAt = Time.unscaledTime + 3f; // draw-state diagnostics again
             }
             if (!switchedOn)
                 return; // off: nothing per frame beyond the key check
@@ -240,8 +242,13 @@ namespace RealWindows
                 Prune();
             }
 
+            listTimer.Reset();
+            listTimer.Start();
             RefreshLists(cam, active, now);
             pipeline.UpdateParking();
+            listTimer.Stop();
+            pipeline.listsSum += listTimer.Elapsed.TotalMilliseconds;
+            pipeline.listsFrames++;
             pipeline.wantActive = active;
             pipeline.suspended = false; // switched on: the composite stays attached (see OnPreCullAny)
 
@@ -259,13 +266,22 @@ namespace RealWindows
             if (RWSettings.verboseLogging && now >= nextStatus)
             {
                 nextStatus = now + 30f;
-                RWLog.Info("status: {0} interiors known, {1} rendered in {2} group(s), {3} skipped (no window in view), {4} occluder parts, {5:F2} ms CPU per frame; shell/props cache: {6} redraws, {7} frames reused, kerbals pass skipped in {9} frames (nothing moving); window cut-outs in {8} frames",
+                string phases = pipeline.TakePhases();
+                int[] why = pipeline.redrawWhy;
+                string whys = string.Format("view {0}, window area {1}, interiors drawn {2}, projection {3}, timer {4}, other mod {5}, start {6}",
+                    why[(int)PortalPipeline.Redraw.View], why[(int)PortalPipeline.Redraw.Area], why[(int)PortalPipeline.Redraw.Set],
+                    why[(int)PortalPipeline.Redraw.Projection], why[(int)PortalPipeline.Redraw.Refresh],
+                    why[(int)PortalPipeline.Redraw.Request], why[(int)PortalPipeline.Redraw.Start]);
+                RWLog.Info("status: {0} interiors known, {1} rendered in {2} group(s), {3} skipped (no window in view), {4} occluder parts ({10} drawn), {5:F2} ms CPU per frame; shell/props cache: {6} redraws ({12}), {7} frames reused, kerbals pass skipped in {9} frames (nothing moving); window cut-outs in {8} frames; CPU ms per rendered frame: {11}",
                     pipeline.allInteriors.Count, pipeline.lastInteriorCount, pipeline.lastGroupCount, pipeline.lastCulled,
                     pipeline.occluders.Count, pipeline.TakeAverageMs(), pipeline.staticRedraws, pipeline.staticReuses, pipeline.holeFrames,
-                    pipeline.kerbalSkips);
+                    pipeline.kerbalSkips, pipeline.lastOccludersDrawn, phases, whys);
                 pipeline.staticRedraws = pipeline.staticReuses = pipeline.holeFrames = pipeline.kerbalSkips = 0;
+                System.Array.Clear(why, 0, why.Length);
             }
         }
+
+        private readonly System.Diagnostics.Stopwatch listTimer = new System.Diagnostics.Stopwatch();
 
         private void RefreshLists(Camera cam, bool active, float now)
         {
