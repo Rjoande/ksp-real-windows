@@ -60,6 +60,38 @@ namespace RealWindows
             return r;
         }
 
+        // CPU time per phase of the frame (verbose status line). GPU time can't be
+        // measured from a mod (no GPU Recorder in KSP's Unity build).
+        private static readonly string[] PhaseNames = { "setup", "commands", "submit", "motion", "cabin redraw", "crew pass", "other" };
+        private const int PhSetup = 0, PhCommands = 1, PhSubmit = 2, PhMotion = 3, PhCabin = 4, PhCrew = 5, PhOther = 6;
+        private readonly double[] phaseSum = new double[7];
+        private double lapMark;
+        private int phaseFrames;
+        public double listsSum;    // RealWindows.Update: part lists and parking
+        public int listsFrames;
+
+        private void Lap(int phase)
+        {
+            double now = timer.Elapsed.TotalMilliseconds;
+            phaseSum[phase] += now - lapMark;
+            lapMark = now;
+        }
+
+        public string TakePhases()
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendFormat("lists {0:F2}", listsFrames > 0 ? listsSum / listsFrames : 0);
+            for (int i = 0; i < phaseSum.Length; i++)
+            {
+                sb.AppendFormat(", {0} {1:F2}", PhaseNames[i], phaseFrames > 0 ? phaseSum[i] / phaseFrames : 0);
+                phaseSum[i] = 0;
+            }
+            phaseFrames = 0;
+            listsSum = 0;
+            listsFrames = 0;
+            return sb.ToString();
+        }
+
         private Camera main;
         private Camera intCam;
         private GameObject intCamGO;
@@ -145,6 +177,7 @@ namespace RealWindows
         private readonly Plane[] groupPlanes = new Plane[6];  // the same, in a group's internal space
         private Rect windowRect;                              // viewport (0-1) area of all windows
         private Matrix4x4 cropProj;                           // projection of just that area
+        private Matrix4x4 fullProj;                           // the main camera's projection this frame (uncropped)
         private readonly System.Diagnostics.Stopwatch timer = new System.Diagnostics.Stopwatch();
         private double timeSum;
         private int timeFrames;
@@ -219,6 +252,8 @@ namespace RealWindows
             catch (Exception) { rp = RenderingPath.Forward; }
             intCam.renderingPath = rp;
 
+            if (RWSettings.verboseLogging)
+                diagAt = Time.unscaledTime + 20f;
             Camera.onPreCull += OnPreCullAny;
             Camera.onPostRender += OnPostRenderAny;
             GameEvents.OnCameraChange.Add(OnCameraChange);
@@ -248,6 +283,7 @@ namespace RealWindows
                     UnityEngine.Object.Destroy(covers[i].gameObject);
             covers.Clear();
             if (coverMesh != null) UnityEngine.Object.Destroy(coverMesh);
+            ReleaseBaked();
             if (matCover != null) UnityEngine.Object.Destroy(matCover);
             Detach();
             DetachInside();
@@ -333,9 +369,15 @@ namespace RealWindows
             rendering = true;
             timer.Reset();
             timer.Start();
+            lapMark = 0;
             try
             {
                 renderedThisFrame = wantActive && interiors.Count > 0 && RenderPasses();
+                if (renderedThisFrame)
+                {
+                    Lap(PhOther);
+                    phaseFrames++;
+                }
             }
             catch (Exception e)
             {
@@ -344,6 +386,7 @@ namespace RealWindows
             }
             finally
             {
+                RestoreShadows();
                 rendering = false;
                 timer.Stop();
                 timeSum += timer.Elapsed.TotalMilliseconds;
@@ -397,6 +440,7 @@ namespace RealWindows
             if (groups.Count == 0)
                 return false;
             insideId = insidePart != null ? insidePart.frameId : 0;
+            Lap(PhSetup);
 
             // Everything else only matters where the windows are: crop to that area.
             float px = 2f * Mathf.Max(1f, RWSettings.feather) + 2f;
@@ -406,8 +450,10 @@ namespace RealWindows
             wr.xMax = Mathf.Clamp01(wr.xMax + px / main.pixelWidth);
             wr.yMax = Mathf.Clamp01(wr.yMax + px / main.pixelHeight);
             windowRect = wr;
+            fullProj = proj;
             cropProj = Crop(wr) * proj;
             GeometryUtility.CalculateFrustumPlanes(cropProj * view, cropPlanes);
+            MarkOccluders(proj * view);
 
             RenderTexture prevActive = RenderTexture.active;
             cbPasses.Clear();
@@ -513,8 +559,10 @@ namespace RealWindows
             SetCompositeParams(matComposite, sun, true);
             if (matCover != null)
                 SetCompositeParams(matCover, sun, false); // the cut-outs leave things in front to the depth test
+            Lap(PhCommands);
 
             Graphics.ExecuteCommandBuffer(cbPasses);
+            Lap(PhSubmit);
 
             // 3. lit interior colour
             RenderInteriorColour();
@@ -757,13 +805,21 @@ namespace RealWindows
 
         // Stock keeps interiors hidden outside IVA (renderers disabled): enable them
         // for this render only.
-        private void FlipOn(PartPortal p)
+        // Only what the pass draws: enabling a renderer is expensive in Unity, and this
+        // ran twice per render for every renderer of every stock-hidden interior (each
+        // uncrewed cabin), the per-frame crew pass included, which draws no cabins.
+        // Crew pass: the crew, plus the whole interior only if it is moving (drawn
+        // whole there). Other passes: everything but props the detail level hides.
+        private void FlipOn(PartPortal p, ColourPass pass, bool props)
         {
             if (!p.StockHidden)
                 return;
-            for (int k = 0; k < p.interiorRenderers.Count; k++)
+            List<Renderer> list = pass == ColourPass.Kerbals && !p.Moving ? p.kerbalRenderers
+                                : !props ? p.nonPropRenderers
+                                : RWSettings.drawInstruments ? p.interiorRenderers : p.nonInstrumentRenderers;
+            for (int k = 0; k < list.Count; k++)
             {
-                Renderer r = p.interiorRenderers[k];
+                Renderer r = list[k];
                 if (r != null && !r.enabled)
                 {
                     r.enabled = true;
@@ -937,6 +993,7 @@ namespace RealWindows
             intCam.rect = windowRect;
             intCam.projectionMatrix = cropProj;
             ShadowQuality shadows = QualitySettings.shadows;
+            shadowsGame = shadows;
             if (!RWSettings.interiorShadows)
                 QualitySettings.shadows = ShadowQuality.Disable;
 
@@ -949,23 +1006,40 @@ namespace RealWindows
                 if (allInteriors[i].part != null)
                     byPart[allInteriors[i].part] = allInteriors[i];
 
+            // motion signatures: every frame for interiors that moved lately, every
+            // 4th frame (staggered) for the rest; a ring starting to spin is noticed
+            // at most 3 frames late
             float now = Time.unscaledTime;
+            int frame = Time.frameCount;
             for (int i = 0; i < allInteriors.Count; i++)
-                allInteriors[i].UpdateMotion(now);
+                if (allInteriors[i].Moving || ((frame + i) & 3) == 0)
+                    allInteriors[i].UpdateMotion(now);
+            Lap(PhMotion);
 
+            shadowDistanceGame = QualitySettings.shadowDistance;
             bool split = RWSettings.interiorRefresh >= 0f && staticColorRT != null && staticDepthRT != null && dynDepthRT != null;
             if (split)
             {
                 if (StaticStale())
                 {
+                    // a margin around the windows' area, so that a window creeping a few
+                    // pixels outward (a wobbling station) doesn't redraw the cache again
+                    float mg = Mathf.Max(0f, RWSettings.interiorCacheMargin);
+                    Rect sr = Rect.MinMaxRect(Mathf.Clamp01(windowRect.xMin - mg), Mathf.Clamp01(windowRect.yMin - mg),
+                                              Mathf.Clamp01(windowRect.xMax + mg), Mathf.Clamp01(windowRect.yMax + mg));
+                    intCam.rect = sr;
+                    intCam.projectionMatrix = Crop(sr) * fullProj;
                     RenderGroups(ColourPass.Static);
-                    RememberStaticView();
+                    intCam.rect = windowRect;
+                    intCam.projectionMatrix = cropProj;
+                    RememberStaticView(sr);
                     staticRedraws++;
                 }
                 else
                 {
                     staticReuses++;
                 }
+                Lap(PhCabin);
                 if (NeedKerbalPass())
                 {
                     Graphics.CopyTexture(staticColorRT, colorRT);
@@ -983,16 +1057,18 @@ namespace RealWindows
                     interiorDepthTex = staticDepthRT;
                     kerbalSkips++;
                 }
+                Lap(PhCrew);
             }
             else
             {
                 RenderGroups(ColourPass.All);
                 interiorTex = colorRT;
                 interiorDepthTex = dynDepthRT;
+                Lap(PhCabin);
             }
             intCam.targetTexture = null;
 
-            QualitySettings.shadows = shadows;
+            RestoreShadows();
             if (ivaSun != null)
                 ivaSun.transform.rotation = sunSaved;
 
@@ -1017,7 +1093,9 @@ namespace RealWindows
                     break;
                 case ColourPass.Static:
                     intCam.SetTargetBuffers(staticColorRT.colorBuffer, staticDepthRT.depthBuffer);
-                    intCam.cullingMask = 1 << LayerInternal;
+                    // both layers: cabin walls can be on the kerbals layer too (FreeIva and
+                    // some IVAs); the crew is told apart by renderer (ApplyDetail), not layer
+                    intCam.cullingMask = (1 << LayerKerbals) | (1 << LayerInternal);
                     break;
                 default:
                     intCam.SetTargetBuffers(colorRT.colorBuffer, dynDepthRT.depthBuffer);
@@ -1067,39 +1145,38 @@ namespace RealWindows
                             }
                         }
                 }
-                flippedEnabled.Clear();
-                masksHidden.Clear();
-                for (int m = 0; m < grp.members.Count; m++)
-                {
-                    FlipOn(grp.members[m]);
-                    HideMasks(grp.members[m]);
-                }
-                foreach (PartPortal q in context)
-                {
-                    FlipOn(q);
-                    HideMasks(q);
-                }
-
                 // detail by the windows' size on screen; neighbours (seen through a
                 // hatch) follow the most detailed member of the group
-                bool grpProps = false, grpCrew = false, cachedCrew = false;
+                bool grpProps = false, grpCrew = false;
                 for (int m = 0; m < grp.members.Count; m++)
                 {
                     grpProps |= grp.members[m].propsOn;
                     grpCrew |= grp.members[m].crewOn;
                 }
+                flippedEnabled.Clear();
+                masksHidden.Clear();
                 for (int m = 0; m < grp.members.Count; m++)
-                    ApplyDetail(grp.members[m], grp.members[m].propsOn, grp.members[m].crewOn, pass, ref cachedCrew);
+                {
+                    FlipOn(grp.members[m], pass, grp.members[m].propsOn);
+                    HideMasks(grp.members[m]);
+                }
                 foreach (PartPortal q in context)
-                    ApplyDetail(q, grpProps, grpCrew, pass, ref cachedCrew);
-                if (pass == ColourPass.Static)
-                    intCam.cullingMask = cachedCrew ? (1 << LayerInternal) | (1 << LayerKerbals) : 1 << LayerInternal;
+                {
+                    FlipOn(q, pass, grpProps);
+                    HideMasks(q);
+                }
+                for (int m = 0; m < grp.members.Count; m++)
+                    ApplyDetail(grp.members[m], grp.members[m].propsOn, grp.members[m].crewOn, pass);
+                foreach (PartPortal q in context)
+                    ApplyDetail(q, grpProps, grpCrew, pass);
 
                 intCam.transform.SetPositionAndRotation(grp.map.Apply(camT.position), grp.map.Apply(camT.rotation));
                 // the first render of the frame clears; the kerbals pass draws over the copied cache
                 intCam.clearFlags = g == 0 && pass != ColourPass.Kerbals ? CameraClearFlags.SolidColor : CameraClearFlags.Nothing;
                 if (ivaSun != null && sunT != null)
                     ivaSun.transform.rotation = grp.map.Apply(sunT.rotation);
+                if (QualitySettings.shadows != ShadowQuality.Disable)
+                    FitShadows(grp, camT);
 
                 bool api = pass != ColourPass.Static && RealWindowsApi.HasSubscribers;
                 if (api)
@@ -1111,6 +1188,9 @@ namespace RealWindows
                         apiParts.Add(q.part);
                     RealWindowsApi.Fire(true, apiParts);
                 }
+
+                if (pass == ColourPass.Static && diagAt >= 0f && Time.unscaledTime >= diagAt)
+                    LogDrawState(g, grp);
 
                 intCam.Render();
 
@@ -1130,21 +1210,88 @@ namespace RealWindows
             }
         }
 
+        // The game's shadow distance (hundreds of metres) put every interior within it
+        // into the interior camera's shadow maps, seen or not, and spread the cascades
+        // over all that space. Only the interiors drawn in this render can cast a
+        // shadow into it: the distance is cut to reach just past the farthest of them
+        // (from the camera's place in internal space). Restored after the colour pass.
+        private float shadowDistanceGame = -1f;
+        private ShadowQuality? shadowsGame;
+
+        // also from OnPreCullAny's finally: a render that threw must not leave the
+        // game's own shadows changed
+        private void RestoreShadows()
+        {
+            if (shadowsGame.HasValue)
+                QualitySettings.shadows = shadowsGame.Value;
+            shadowsGame = null;
+            if (shadowDistanceGame > 0f)
+                QualitySettings.shadowDistance = shadowDistanceGame;
+            shadowDistanceGame = -1f;
+        }
+
+        private void FitShadows(PortalGroup grp, Transform camT)
+        {
+            if (!RWSettings.fitInteriorShadows || shadowDistanceGame <= 0f)
+                return;
+            Vector3 cam = grp.map.Apply(camT.position);
+            float far = 0f;
+            for (int m = 0; m < grp.members.Count; m++)
+                far = Mathf.Max(far, ReachOf(grp.members[m], cam));
+            foreach (PartPortal q in context)
+                far = Mathf.Max(far, ReachOf(q, cam));
+            if (far <= 0f)
+                return;
+            QualitySettings.shadowDistance = Mathf.Min(shadowDistanceGame, Mathf.Max(5f, far * 1.05f + 1f));
+        }
+
+        private static float ReachOf(PartPortal q, Vector3 cam)
+        {
+            if (q.model == null || !q.haveShellBounds)
+                return 0f;
+            Vector3 c = q.model.transform.TransformPoint(q.shellCenterLocal);
+            return (c - cam).magnitude + q.shellRadius;
+        }
+
         // Props of interiors whose windows are small on screen stay out of every render.
         // Their crew is drawn into the cached image instead of every frame: in the
         // Static pass (which then also takes the kerbals layer) while the crew of the
         // detailed interiors is hidden there, and hidden in the per-frame pass. Moving
         // interiors aren't in the cache, so their crew stays live.
-        private void ApplyDetail(PartPortal q, bool props, bool crew, ColourPass pass, ref bool cachedCrew)
+        // Verbose diagnostics: once, a while after the scene starts (and after each
+        // switch on), the state of every interior this cabin render is about to draw.
+        public float diagAt = -1f;
+
+        private void LogDrawState(int g, PortalGroup grp)
         {
-            if (!props)
+            if (g == groups.Count - 1)
+                diagAt = -1f;
+            RWLog.Info("draw state, group {0}: camera path {1} (actual {2}), mask 0x{3:X}, rect {4}, near {5:F3} far {6:F0}, shadows {7} dist {8:F1}",
+                g, intCam.renderingPath, intCam.actualRenderingPath, intCam.cullingMask, intCam.rect,
+                intCam.nearClipPlane, intCam.farClipPlane, QualitySettings.shadows, QualitySettings.shadowDistance);
+            for (int m = 0; m < grp.members.Count; m++)
+                RWLog.Info("draw state member {0}", grp.members[m].DrawState());
+            foreach (PartPortal q in context)
+                RWLog.Info("draw state neighbour {0}", q.DrawState());
+        }
+
+        private void ApplyDetail(PartPortal q, bool props, bool crew, ColourPass pass)
+        {
+            // The crew pass draws the kerbals layer, which also holds cabin walls and props
+            // in some IVAs (FreeIva moves them there): those belong to the cached cabin
+            // image and are hidden here, unless the interior is moving (drawn whole here).
+            bool whole = pass != ColourPass.Kerbals || q.Moving;
+            if (!whole)
+                HideAll(q.kerbalLayerOthers);
+            else if (!props)
                 HideAll(q.propRenderers);
+            else if (!RWSettings.drawInstruments)
+                HideAll(q.instrumentRenderers); // RPM/MAS switch some on by themselves
+            // crew of small windows is drawn into the cache (Static), the rest per frame
             if (pass == ColourPass.Static)
             {
                 if (crew)
                     HideAll(q.kerbalRenderers);
-                else if (q.HasKerbals && !q.Moving)
-                    cachedCrew = true;
             }
             else if (pass == ColourPass.Kerbals && !crew && !q.Moving)
             {
@@ -1209,52 +1356,154 @@ namespace RealWindows
         }
 
         // The cached layer is redrawn when anything that shapes its picture
-        // changed: the view of each group's interiors (camera pose mapped into
-        // internal space), the projection, which interiors are drawn and which of
+        // changed: the view of each group's interiors (camera pose relative to the
+        // group's first part), the projection, which interiors are drawn and which of
         // them move (a moving interior leaves the cache, and rejoins it 2 s after
         // stopping), a crop area that now reaches past the cached one; and every
         // `interiorRefresh` seconds (lighting, animated props) or when another mod asks.
+        // Why the cache was redrawn, counted for the status line.
+        public enum Redraw { Start, Request, Refresh, Set, Area, Projection, View, Count }
+        public readonly int[] redrawWhy = new int[(int)Redraw.Count];
+
         private bool StaticStale()
         {
-            if (staticAt < 0f || RealWindowsApi.TakeRedrawRequest())
+            Redraw why;
+            bool stale = StaticStaleWhy(out why);
+            if (stale)
+                redrawWhy[(int)why]++;
+            return stale;
+        }
+
+        private bool StaticStaleWhy(out Redraw why)
+        {
+            why = Redraw.Start;
+            if (staticAt < 0f)
                 return true;
+            why = Redraw.Request;
+            if (RealWindowsApi.TakeRedrawRequest())
+                return true;
+            why = Redraw.Refresh;
             if (RWSettings.interiorRefresh > 0f && Time.unscaledTime - staticAt >= RWSettings.interiorRefresh)
                 return true;
+            why = Redraw.Set;
             if (groups.Count != staticPos.Count || ViewHash() != staticHash)
                 return true;
+            why = Redraw.Area;
             float px = 0.5f / Mathf.Max(1, rtW), py = 0.5f / Mathf.Max(1, rtH);
             if (windowRect.xMin < staticRect.xMin - px || windowRect.yMin < staticRect.yMin - py
                 || windowRect.xMax > staticRect.xMax + px || windowRect.yMax > staticRect.yMax + py)
                 return true;
+            why = Redraw.Projection;
             Matrix4x4 proj = main.nonJitteredProjectionMatrix;
             for (int k = 0; k < 16; k++)
                 if (Mathf.Abs(proj[k] - staticProj[k]) > 1e-5f)
                     return true;
-            Transform camT = main.transform;
+            why = Redraw.View;
+            float maxPx = RWSettings.interiorRedrawPixels;
             float maxMove = RWSettings.interiorRedrawMove, maxTurn = RWSettings.interiorRedrawTurn;
             for (int g = 0; g < groups.Count; g++)
             {
-                if ((groups[g].map.Apply(camT.position) - staticPos[g]).sqrMagnitude > maxMove * maxMove)
+                Vector3 pos;
+                Quaternion rot;
+                CameraInGroup(g, out pos, out rot);
+                if (maxPx > 0f)
+                {
+                    if (ViewShiftPixels(g, pos, rot, proj) > maxPx)
+                        return true;
+                    continue;
+                }
+                if ((pos - staticPos[g]).sqrMagnitude > maxMove * maxMove)
                     return true;
-                if (Quaternion.Angle(groups[g].map.Apply(camT.rotation), staticRot[g]) > maxTurn)
+                if (Quaternion.Angle(rot, staticRot[g]) > maxTurn)
                     return true;
             }
             return false;
         }
 
-        private void RememberStaticView()
+        // How far (in screen pixels) the group's interiors would have moved on screen
+        // since the cache was drawn: sample points of each member (its part's origin and
+        // its shell radius around it, on the axes and towards the camera) seen from the
+        // cached and the current camera pose relative to the group's first part. A fixed
+        // distance threshold (0.5 mm, 0.01 deg) was far below a pixel from tens of
+        // metres away, so a station's slight wobble redrew the cache almost every frame.
+        private float ViewShiftPixels(int g, Vector3 pos, Quaternion rot, Matrix4x4 proj)
+        {
+            List<PartPortal> ms = groups[g].members;
+            Part first = ms.Count > 0 ? ms[0].part : null;
+            if (first == null)
+                return float.MaxValue;
+            Matrix4x4 flip = Matrix4x4.Scale(new Vector3(1f, 1f, -1f));
+            Matrix4x4 vpNow = proj * flip * Matrix4x4.TRS(pos, rot, Vector3.one).inverse;
+            Matrix4x4 vpOld = proj * flip * Matrix4x4.TRS(staticPos[g], staticRot[g], Vector3.one).inverse;
+            float hw = 0.5f * Mathf.Max(1, main.pixelWidth), hh = 0.5f * Mathf.Max(1, main.pixelHeight);
+            Transform ft = first.transform;
+            float worst = 0f;
+            for (int m = 0; m < ms.Count; m++)
+            {
+                if (ms[m].part == null)
+                    continue;
+                Vector3 c = ft.InverseTransformPoint(ms[m].part.transform.position);
+                float r = Mathf.Max(0.5f, ms[m].shellRadius);
+                Vector3 toCam = pos - c;
+                Vector3 near = toCam.sqrMagnitude > r * r ? c + toCam.normalized * r : c;
+                for (int k = 0; k < 8; k++)
+                {
+                    Vector3 p = k == 0 ? c : k == 1 ? near
+                        : c + r * (k == 2 ? Vector3.right : k == 3 ? Vector3.left : k == 4 ? Vector3.up
+                                 : k == 5 ? Vector3.down : k == 6 ? Vector3.forward : Vector3.back);
+                    Vector4 a = vpNow * new Vector4(p.x, p.y, p.z, 1f);
+                    Vector4 b = vpOld * new Vector4(p.x, p.y, p.z, 1f);
+                    bool inA = a.w > 1e-3f, inB = b.w > 1e-3f;
+                    if (!inA && !inB)
+                        continue;
+                    if (inA != inB)
+                        return float.MaxValue;
+                    float dx = (a.x / a.w - b.x / b.w) * hw, dy = (a.y / a.w - b.y / b.w) * hh;
+                    float d = Mathf.Sqrt(dx * dx + dy * dy);
+                    if (d > worst)
+                        worst = d;
+                }
+            }
+            return worst;
+        }
+
+        // The camera's pose relative to the group's first part: what the cached
+        // picture of the group's (rigid) interiors depends on. Not its pose in KSP's
+        // internal space: that space follows the active vessel, and FreeIva re-places
+        // every interior through it each Update. On EVA the active vessel is the
+        // kerbal the camera follows, so the camera's internal-space pose barely
+        // changed while the interiors moved and turned around it, and the cache kept
+        // showing the cabin where it had been.
+        private void CameraInGroup(int g, out Vector3 pos, out Quaternion rot)
+        {
+            Transform camT = main.transform;
+            Part p = groups[g].members.Count > 0 ? groups[g].members[0].part : null;
+            if (p == null)
+            {
+                pos = groups[g].map.Apply(camT.position);
+                rot = groups[g].map.Apply(camT.rotation);
+                return;
+            }
+            Transform pt = p.transform;
+            pos = pt.InverseTransformPoint(camT.position);
+            rot = Quaternion.Inverse(pt.rotation) * camT.rotation;
+        }
+
+        private void RememberStaticView(Rect drawn)
         {
             staticAt = Time.unscaledTime;
-            staticRect = windowRect;
+            staticRect = drawn;
             staticProj = main.nonJitteredProjectionMatrix;
             staticHash = ViewHash();
             staticPos.Clear();
             staticRot.Clear();
-            Transform camT = main.transform;
             for (int g = 0; g < groups.Count; g++)
             {
-                staticPos.Add(groups[g].map.Apply(camT.position));
-                staticRot.Add(groups[g].map.Apply(camT.rotation));
+                Vector3 pos;
+                Quaternion rot;
+                CameraInGroup(g, out pos, out rot);
+                staticPos.Add(pos);
+                staticRot.Add(rot);
             }
         }
 
@@ -1410,6 +1659,68 @@ namespace RealWindows
             depthModeTouched = false;
         }
 
+        // Which occluders can touch a window pixel: their hull's screen rectangle
+        // overlaps some rendered part's window area. The crop only knows the union of
+        // all window areas, which on a station with windows all over the screen is
+        // most of it, so nearly every part was drawn in both hull passes. A part that
+        // overlaps no window can neither cover one nor sit behind one.
+        private readonly List<Vector4> winRects = new List<Vector4>();
+
+        private void MarkOccluders(Matrix4x4 vp)
+        {
+            bool all = !RWSettings.cullOccludersPerWindow || insideId > 0 || RWSettings.debugMode > 0;
+            winRects.Clear();
+            if (!all)
+                for (int g = 0; g < groups.Count; g++)
+                    for (int m = 0; m < groups[g].members.Count; m++)
+                        winRects.Add(PadRect(groups[g].members[m].screenArea));
+            lastOccludersDrawn = 0;
+            for (int i = 0; i < occluders.Count; i++)
+            {
+                PartPortal p = occluders[i];
+                p.hullInView = all || p.frameId > 0 || HullOverlapsWindows(p, vp);
+                if (p.hullInView)
+                    lastOccludersDrawn++;
+            }
+        }
+
+        public int lastOccludersDrawn;
+
+        private bool HullOverlapsWindows(PartPortal p, Matrix4x4 vp)
+        {
+            Bounds b = new Bounds();
+            bool any = false;
+            for (int k = 0; k < p.exterior.Count; k++)
+            {
+                Renderer r = p.exterior[k].r;
+                if (r == null || !r.enabled || !r.gameObject.activeInHierarchy)
+                    continue;
+                if (!any) { b = r.bounds; any = true; }
+                else b.Encapsulate(r.bounds);
+            }
+            if (!any)
+                return false;
+            Vector3 c = b.center, e = b.extents;
+            float x0 = 1f, y0 = 1f, x1 = 0f, y1 = 0f;
+            for (int i = 0; i < 8; i++)
+            {
+                Vector4 q = vp * new Vector4(c.x + ((i & 1) == 0 ? -e.x : e.x), c.y + ((i & 2) == 0 ? -e.y : e.y),
+                                             c.z + ((i & 4) == 0 ? -e.z : e.z), 1f);
+                if (q.w <= 1e-4f)
+                    return true; // reaches behind the camera: keep it
+                float vx = q.x / q.w * 0.5f + 0.5f, vy = q.y / q.w * 0.5f + 0.5f;
+                x0 = Mathf.Min(x0, vx); y0 = Mathf.Min(y0, vy);
+                x1 = Mathf.Max(x1, vx); y1 = Mathf.Max(y1, vy);
+            }
+            for (int w = 0; w < winRects.Count; w++)
+            {
+                Vector4 r = winRects[w];
+                if (x1 >= r.x && x0 <= r.z && y1 >= r.y && y0 <= r.w)
+                    return true;
+            }
+            return false;
+        }
+
         // Every occluder's hull sub-meshes into the bound hull targets: part id, eye
         // depth, window state (+ glass surface on the main pass).
         private void DrawHulls(Plane[] cropPlanes)
@@ -1417,7 +1728,7 @@ namespace RealWindows
             for (int i = 0; i < occluders.Count; i++)
             {
                 PartPortal p = occluders[i];
-                if (p.part == null)
+                if (p.part == null || !p.hullInView)
                     continue;
                 cbPasses.SetGlobalFloat(PID_PartId, p.frameId);
                 bool confident = p.frameId > 0 && p.HasConfidentWindows;
@@ -1443,9 +1754,83 @@ namespace RealWindows
                     if (!GeometryUtility.TestPlanesAABB(cropPlanes, r.bounds))
                         continue; // can't cover a window
                     cbPasses.SetGlobalFloat(PID_MaskMode, HullMode(p, d, confident));
-                    cbPasses.DrawRenderer(r, matHull, d.sub, 0);
+                    Mesh baked;
+                    Matrix4x4 bakedMatrix;
+                    if (p.isKerbal && BakedKerbal(r, out baked, out bakedMatrix))
+                        cbPasses.DrawMesh(baked, bakedMatrix, matHull, d.sub, 0);
+                    else
+                        cbPasses.DrawRenderer(r, matHull, d.sub, 0);
                 }
             }
+        }
+
+        // An EVA kerbal's skinned meshes, baked in this frame's pose (once per frame,
+        // shared by the hull and behind passes). Drawn through DrawRenderer they come
+        // from Unity's own skinning, which for a renderer drawn from a command buffer
+        // before the camera has culled it may be last frame's pose or none: a walking
+        // kerbal then left a gap in the hull pass and the window behind showed
+        // through. Only for unscaled transforms (BakeMesh's scale handling differs
+        // between Unity versions); anything else keeps DrawRenderer.
+        private readonly Dictionary<Renderer, Mesh> bakedMeshes = new Dictionary<Renderer, Mesh>();
+        private readonly Dictionary<Renderer, int> bakedFrames = new Dictionary<Renderer, int>();
+        private readonly List<Renderer> bakedDead = new List<Renderer>();
+        private int bakedPruneFrame;
+
+        private bool BakedKerbal(Renderer r, out Mesh mesh, out Matrix4x4 matrix)
+        {
+            mesh = null;
+            matrix = Matrix4x4.identity;
+            SkinnedMeshRenderer smr = r as SkinnedMeshRenderer;
+            if (smr == null || !RWSettings.bakeKerbals || smr.sharedMesh == null)
+                return false;
+            Transform t = smr.transform;
+            Vector3 s = t.lossyScale;
+            if (Mathf.Abs(s.x - 1f) > 1e-3f || Mathf.Abs(s.y - 1f) > 1e-3f || Mathf.Abs(s.z - 1f) > 1e-3f)
+                return false;
+            int frame = Time.frameCount;
+            if (!bakedMeshes.TryGetValue(r, out mesh) || mesh == null)
+            {
+                mesh = new Mesh { name = "RW baked kerbal" };
+                mesh.MarkDynamic();
+                bakedMeshes[r] = mesh;
+                bakedFrames[r] = -1;
+            }
+            if (bakedFrames[r] != frame)
+            {
+                smr.BakeMesh(mesh);
+                bakedFrames[r] = frame;
+            }
+            matrix = Matrix4x4.TRS(t.position, t.rotation, Vector3.one);
+            if (frame - bakedPruneFrame > 600)
+                PruneBaked(frame);
+            return mesh.vertexCount > 0;
+        }
+
+        // meshes of kerbals that are gone or haven't been drawn for a while
+        private void PruneBaked(int frame)
+        {
+            bakedPruneFrame = frame;
+            bakedDead.Clear();
+            foreach (KeyValuePair<Renderer, int> kv in bakedFrames)
+                if (kv.Key == null || frame - kv.Value > 600)
+                    bakedDead.Add(kv.Key);
+            for (int i = 0; i < bakedDead.Count; i++)
+            {
+                Mesh m;
+                if (bakedMeshes.TryGetValue(bakedDead[i], out m) && m != null)
+                    UnityEngine.Object.Destroy(m);
+                bakedMeshes.Remove(bakedDead[i]);
+                bakedFrames.Remove(bakedDead[i]);
+            }
+        }
+
+        private void ReleaseBaked()
+        {
+            foreach (Mesh m in bakedMeshes.Values)
+                if (m != null)
+                    UnityEngine.Object.Destroy(m);
+            bakedMeshes.Clear();
+            bakedFrames.Clear();
         }
 
         // 0 probe per pixel, 1 baked mask, 2 the author's glass (opaque or unknown),

@@ -39,7 +39,9 @@ namespace RealWindows
         public static bool interiorShadows = true;       // shadows inside interiors (a whole shadow pass)
         public static float interiorRefresh = 1f;        // s between redraws of the cached shell/props layer while the view holds still; 0 = only on change, -1 = no cache
         public static float interiorRedrawMove = 0.0005f; // m the camera may move (in the interior's frame) before the cache is redrawn
-        public static float interiorRedrawTurn = 0.01f;  // deg the camera may turn before the cache is redrawn
+        public static float interiorRedrawTurn = 0.01f;  // deg the camera may turn before the cache is redrawn (only with interiorRedrawPixels = 0)
+        public static float interiorRedrawPixels = 0.3f; // px the interiors may shift on screen before the cache is redrawn; 0 = use interiorRedrawMove/Turn
+        public static float interiorCacheMargin = 0.03f; // share of the screen drawn around the windows' area into the cache, so a creeping window doesn't redraw it
         public static bool kerbalShadows = false;        // shadows in the per-frame kerbals pass (a second shadow pass)
         public static bool renderNeighbours = true;      // interiors of attached parts, seen through open hatches
         public static bool showInteriorWhenInside = true; // camera inside a part: its interior is shown whole
@@ -53,9 +55,13 @@ namespace RealWindows
         public static bool hideDepthMasks = true;        // interior depth masks (FreeIva hatch doorways) skipped in our render
         public static bool hideInteriorGlass = true;     // the IVA's own transparent window glass skipped in our render
         public static bool scissorPasses = true;         // id/depth passes drawn only over the windows' screen area
-        public static bool bindCameraTarget = true;      // the composite binds the camera's target itself (another buffer before it may leave its own bound)
+        public static bool fitInteriorShadows = true;    // interior shadow distance cut to the interiors drawn
+        public static bool cullOccludersPerWindow = true; // hull passes draw only parts that overlap some window on screen
+        public static bool bakeKerbals = true;          // EVA kerbals' skinned meshes baked in this frame's pose for the hull pass
+        public static bool bindCameraTarget = true;     // the composite binds the camera's target itself (another buffer before it may leave its own bound)
         public static float interiorScale = 1f;          // interior image resolution relative to the screen (0.1-1)
         public static float propDetailPixels = 160f;     // props drawn while the windows are at least this big on screen (px, largest side; 0 = always)
+        public static bool drawInstruments = false;      // RPM/MAS/stock instrument props drawn at all (most draw calls; unreadable from outside)
         public static float crewDetailPixels = 48f;      // crew animated every frame from this size; smaller, it is cached with the cabin (0 = always)
 
         // look
@@ -149,6 +155,8 @@ namespace RealWindows
                 F(n, "interiorRefresh", ref interiorRefresh);
                 F(n, "interiorRedrawMove", ref interiorRedrawMove);
                 F(n, "interiorRedrawTurn", ref interiorRedrawTurn);
+                F(n, "interiorRedrawPixels", ref interiorRedrawPixels);
+                F(n, "interiorCacheMargin", ref interiorCacheMargin);
                 B(n, "kerbalShadows", ref kerbalShadows);
                 B(n, "renderNeighbours", ref renderNeighbours);
                 B(n, "showInteriorWhenInside", ref showInteriorWhenInside);
@@ -159,9 +167,13 @@ namespace RealWindows
                 B(n, "hideInteriorGlass", ref hideInteriorGlass);
                 B(n, "scissorPasses", ref scissorPasses);
                 B(n, "bindCameraTarget", ref bindCameraTarget);
+                B(n, "bakeKerbals", ref bakeKerbals);
+                B(n, "fitInteriorShadows", ref fitInteriorShadows);
+                B(n, "cullOccludersPerWindow", ref cullOccludersPerWindow);
                 F(n, "interiorScale", ref interiorScale);
                 F(n, "propDetailPixels", ref propDetailPixels);
                 F(n, "crewDetailPixels", ref crewDetailPixels);
+                B(n, "drawInstruments", ref drawInstruments);
                 B(n, "seeIntoNeighbours", ref seeIntoNeighbours);
                 B(n, "seeThroughWindows", ref seeThroughWindows);
                 I(n, "seeThroughHoleParts", ref seeThroughHoleParts);
