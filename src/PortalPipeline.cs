@@ -108,6 +108,10 @@ namespace RealWindows
         private readonly MaterialPropertyBlock coverBlock = new MaterialPropertyBlock();
         private readonly List<PartPortal> holeParts = new List<PartPortal>();
         private readonly float[] holeIds = new float[MaxIds];
+        // parts drawn as glass with a body, their interior not rendered (GlassBody)
+        private readonly List<PartPortal> glassOnly = new List<PartPortal>();
+        private readonly float[] bodyIds = new float[MaxIds];
+        private static readonly Comparison<PartPortal> ByDistance = (a, b) => a.distance.CompareTo(b.distance);
         private readonly List<Renderer> reordered = new List<Renderer>();
         private readonly List<int> reorderedWas = new List<int>();
         private readonly HashSet<Renderer> reorderSeen = new HashSet<Renderer>();
@@ -372,7 +376,7 @@ namespace RealWindows
             lapMark = 0;
             try
             {
-                renderedThisFrame = wantActive && interiors.Count > 0 && RenderPasses();
+                renderedThisFrame = wantActive && (interiors.Count > 0 || (GlassBody.Active && occluders.Count > 0)) && RenderPasses();
                 if (renderedThisFrame)
                 {
                     Lap(PhOther);
@@ -423,22 +427,26 @@ namespace RealWindows
 
         private bool RenderPasses()
         {
-            int w = Mathf.Max(16, Mathf.RoundToInt(main.pixelWidth * RWSettings.renderScale));
-            int h = Mathf.Max(16, Mathf.RoundToInt(main.pixelHeight * RWSettings.renderScale));
-            EnsureRTs(w, h, main.allowHDR);
-
             Matrix4x4 view = main.worldToCameraMatrix;
             Matrix4x4 proj = main.projectionMatrix;
             GeometryUtility.CalculateFrustumPlanes(main, planes);
 
             // ids + alignment maps + groups, only for interiors with a window in view
             for (int i = 0; i < occluders.Count; i++)
+            {
                 occluders[i].frameId = 0;
+                occluders[i].glassOnly = false;
+            }
             for (int i = 0; i < allInteriors.Count; i++)
                 allInteriors[i].frameId = 0; // also those beyond occluder range
             BuildGroups();
-            if (groups.Count == 0)
+            if (groups.Count == 0 && glassOnly.Count == 0)
                 return false;
+            // only now: with reflective glass this point is reached in every scene,
+            // and the targets are needed only when there is a window to draw
+            int w = Mathf.Max(16, Mathf.RoundToInt(main.pixelWidth * RWSettings.renderScale));
+            int h = Mathf.Max(16, Mathf.RoundToInt(main.pixelHeight * RWSettings.renderScale));
+            EnsureRTs(w, h, main.allowHDR);
             insideId = insidePart != null ? insidePart.frameId : 0;
             Lap(PhSetup);
 
@@ -564,8 +572,11 @@ namespace RealWindows
             Graphics.ExecuteCommandBuffer(cbPasses);
             Lap(PhSubmit);
 
-            // 3. lit interior colour
-            RenderInteriorColour();
+            // 3. lit interior colour (none to draw when every window in view is glass with a body)
+            if (groups.Count > 0)
+                RenderInteriorColour();
+            else
+                staticAt = -1f; // whatever is cached may be out of date by the next render
             BindInterior(matComposite);
             BindInterior(matCover);
 
@@ -584,7 +595,8 @@ namespace RealWindows
             for (int i = 0; i < holeIds.Length; i++)
                 holeIds[i] = 0f;
             holeParts.Clear();
-            if (!behindDrawn || matCover == null || ivaView || insideId > 0)
+            // reflection-only glass shows nothing through the pane
+            if (!behindDrawn || matCover == null || ivaView || insideId > 0 || GlassBody.AllParts)
                 return;
             for (int g = 0; g < groups.Count; g++)
                 for (int m = 0; m < groups[g].members.Count; m++)
@@ -744,6 +756,17 @@ namespace RealWindows
             mat.SetFloatArray("_RW_IdGroup", idGroup);
             mat.SetFloat("_RW_SeeNeighbours", RWSettings.seeIntoNeighbours ? 1f : 0f);
             mat.SetFloatArray("_RW_HoleIds", holeIds);
+            // panes with a body instead of the interior: the parts drawn without theirs,
+            // and with reflection-only glass every part
+            for (int i = 0; i < MaxIds; i++)
+                bodyIds[i] = 0f;
+            for (int i = 0; i < glassOnly.Count; i++)
+                bodyIds[glassOnly[i].frameId] = 1f;
+            if (GlassBody.AllParts)
+                for (int i = 0; i < MaxIds; i++)
+                    if (idGroup[i] >= 0f)
+                        bodyIds[i] = 1f;
+            GlassBody.Apply(mat, sunColour, bodyIds);
             // the colour render's depth (cached shell/props + kerbals), so props and kerbals
             // in front of a far window keep the interior; only with the split colour pass
             bool intDepth = RWSettings.interiorRefresh >= 0f && staticColorRT != null && staticDepthRT != null && dynDepthRT != null;
@@ -886,7 +909,7 @@ namespace RealWindows
         // interior whole, like the stock interior overlay.
         private PartPortal FindCameraInside()
         {
-            if (!RWSettings.showInteriorWhenInside || ivaView)
+            if (!RWSettings.showInteriorWhenInside || ivaView || GlassBody.AllParts)
                 return null;
             for (int i = 0; i < interiors.Count; i++)
                 if (CameraIn(interiors[i]))
@@ -973,6 +996,46 @@ namespace RealWindows
                 target.members.Add(p);
                 p.group = groups.IndexOf(target);
             }
+            AddGlassOnly(ref id, ref haveRect);
+        }
+
+        // Parts whose windows are known but whose interior isn't drawn this frame
+        // (reflection-only glass, beyond maxDistance or maxInteriors): they get an id
+        // as well, nearest first, and the composite gives their panes a body in
+        // place of the interior (GlassBody).
+        private void AddGlassOnly(ref int id, ref bool haveRect)
+        {
+            glassOnly.Clear();
+            if (!GlassBody.Active)
+                return;
+            for (int i = 0; i < occluders.Count; i++)
+            {
+                PartPortal p = occluders[i];
+                if (p.frameId > 0 || p.part == null || p.Opaque || p.excluded || !p.GlassKnown)
+                    continue;
+                if (ivaView && (p.part == ivaPart || CameraIn(p)))
+                    continue; // the IVA camera's own part
+                glassOnly.Add(p);
+            }
+            glassOnly.Sort(ByDistance);
+            int kept = 0;
+            for (int i = 0; i < glassOnly.Count; i++)
+            {
+                PartPortal p = glassOnly[i];
+                Bounds wb;
+                Rect area;
+                if (id >= MaxIds - 1 || !p.WindowBounds(out wb) || !ScreenArea(wb, out area))
+                    continue;
+                if (!haveRect) { windowRect = area; haveRect = true; }
+                else windowRect = Rect.MinMaxRect(Mathf.Min(windowRect.xMin, area.xMin), Mathf.Min(windowRect.yMin, area.yMin),
+                                                   Mathf.Max(windowRect.xMax, area.xMax), Mathf.Max(windowRect.yMax, area.yMax));
+                p.screenArea = area;
+                p.frameId = ++id;
+                p.glassOnly = true;
+                glassOnly[kept++] = p;
+            }
+            glassOnly.RemoveRange(kept, glassOnly.Count - kept);
+            GlassBody.Report(kept);
         }
 
         private static bool SplitSupported
@@ -1674,6 +1737,9 @@ namespace RealWindows
                 for (int g = 0; g < groups.Count; g++)
                     for (int m = 0; m < groups[g].members.Count; m++)
                         winRects.Add(PadRect(groups[g].members[m].screenArea));
+            if (!all)
+                for (int i = 0; i < glassOnly.Count; i++)
+                    winRects.Add(PadRect(glassOnly[i].screenArea));
             lastOccludersDrawn = 0;
             for (int i = 0; i < occluders.Count; i++)
             {
@@ -1733,7 +1799,13 @@ namespace RealWindows
                 cbPasses.SetGlobalFloat(PID_PartId, p.frameId);
                 bool confident = p.frameId > 0 && p.HasConfidentWindows;
                 cbPasses.SetGlobalFloat("_RW_SunLit", p.part.vessel != null && p.part.vessel.directSunlight ? 1f : 0f);
-                if (p.frameId > 0 && p.probe != null && p.probe.baked)
+                if (p.glassOnly)
+                {
+                    // no interior, so no probe: its masks and the author's glass decide
+                    // (HullMode never picks the per-pixel probe for it)
+                    cbPasses.SetGlobalFloat(PID_HasProbe, 1f);
+                }
+                else if (p.frameId > 0 && p.probe != null && p.probe.baked)
                 {
                     cbPasses.SetGlobalFloat(PID_HasProbe, 1f);
                     cbPasses.SetGlobalTexture(PID_ProbeTex, p.probe.tex);
@@ -1855,7 +1927,7 @@ namespace RealWindows
             }
             if (p.frameId > 0 && (d.mask == null || (d.mask.done && d.mask.tex == null)) && confident)
                 return 3f; // nothing confident here, and the part's windows are known elsewhere: no per-pixel probe
-            return 0f;
+            return p.glassOnly ? 3f : 0f;
         }
 
         private void EnsureRTs(int w, int h, bool hdr)

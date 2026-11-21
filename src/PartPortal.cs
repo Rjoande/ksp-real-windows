@@ -80,6 +80,7 @@ namespace RealWindows
         public float distance;
         public Rect screenArea;          // viewport area of its windows (whole screen when the camera is inside)
         public bool hullInView = true;   // this frame: its hull overlaps some window on screen (drawn in the hull passes)
+        public bool glassOnly;           // this frame: its windows are drawn as glass with a body, its interior is not rendered
         public bool parkedHidden;        // forceRenderingOff held outside our passes
 
         // crew (or anything else on the kerbals layer) in the interior: drawn every frame
@@ -205,6 +206,25 @@ namespace RealWindows
                         return true;
                 }
                 return false;
+            }
+        }
+
+        // Its windows are known for good, without the interior: confident windows and
+        // no mask still to bake. Then the glass can be drawn with a body (GlassBody)
+        // while the interior stays out of the render.
+        public bool GlassKnown
+        {
+            get
+            {
+                for (int i = 0; i < exterior.Count; i++)
+                {
+                    DrawItem d = exterior[i];
+                    if (d.solid || d.glass == null || d.mask == null || d.mask.namedRejected)
+                        continue;
+                    if (!d.mask.done)
+                        return false;
+                }
+                return HasConfidentWindows;
             }
         }
 

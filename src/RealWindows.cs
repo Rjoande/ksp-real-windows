@@ -342,6 +342,10 @@ namespace RealWindows
 
                     if (!pp.hasIva || pp.excluded || pp.Opaque || !vesselEligible || d > RWSettings.maxDistance)
                         continue;
+                    // reflection-only glass: the interior is needed only until the part's
+                    // windows are known (the masks come from it)
+                    if (GlassBody.AllParts && pp.GlassKnown)
+                        continue;
                     if (p.internalModel == null)
                     {
                         if (!RWSettings.createMissingInteriors || created >= RWSettings.createPerFrame)
@@ -431,6 +435,12 @@ namespace RealWindows
                 ScreenMessages.PostScreenMessage("RealWindows glass: " + (RWSettings.glassEnvironment
                     ? "reflects the scene (" + GlassEnvironment.SourceName(RWSettings.glassEnvironmentSource) + ")"
                     : "painted window as the reflection"), 2f, ScreenMessageStyle.UPPER_CENTER);
+            }
+            if (RWSettings.glassOpacityKey != KeyCode.None && Input.GetKeyDown(RWSettings.glassOpacityKey))
+            {
+                RWSettings.glassOpacity = RWSettings.glassOpacity == GlassBody.Transparent ? GlassBody.ReflectionOnly : GlassBody.Transparent;
+                ScreenMessages.PostScreenMessage("RealWindows glass opacity: " + GlassBody.OpacityName(RWSettings.glassOpacity)
+                    + (RWSettings.glassEnvironment ? "" : " (no effect: painted window as the reflection)"), 2f, ScreenMessageStyle.UPPER_CENTER);
             }
             if (RWSettings.alignmentDumpKey != KeyCode.None && Input.GetKeyDown(RWSettings.alignmentDumpKey))
                 DumpAlignment();

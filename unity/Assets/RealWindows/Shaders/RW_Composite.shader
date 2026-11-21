@@ -24,6 +24,9 @@
 // is the look above; towards grazing angles the painted window gives way to the scene.
 // The glint goes where the pane is in another part's shade (_RW_SunShadowTex, the
 // sun's screen-space shadow mask of this camera render).
+// Glass with a body (_RW_BodyIds: reflection-only glass, parts drawn without their
+// interior): the bracket is the pane's own dark colour lit by the ambient light and
+// the sun, and nothing of the painted window is left.
 //
 // See-through (_RW_SeeThrough): where a trusted window's view leaves the cabin
 // before meeting an interior surface (out through its far window), the hull layer
@@ -149,6 +152,7 @@ Shader "Hidden/RealWindows/Composite"
                                : r == 6 ? float3(0.2, 0.4, 1)         // real glass, scene as it is: blue
                                : r == 7 ? (HasHole(c.w) ? float3(1, 0, 1) : float3(0.4, 0, 0.4))  // cut-out: magenta / none: dark purple
                                : r == 8 ? float3(0.6, 1, 0.1)         // interior, no see-through test: lime
+                               : r == 10 ? float3(1, 1, 1)            // glass with a body, no interior shown: white
                                :          float3(1, 1, 0);            // probe window, no interior behind: yellow
                     return PM(float4(col, 0.6));
                 }
@@ -217,9 +221,17 @@ Shader "Hidden/RealWindows/Composite"
                     float f = saturate(s.r * _RW_Reflection);
                     float t0 = _RW_Transmission * (1 - dirt * 0.6);
                     float3 env = tex2Dlod(_RW_EnvTex, float4(uv, 0, 0)).rgb;
-                    float3 gloss = (env * f + _RW_SunColor.rgb * s.g * SunShadow(uv)) * (1 - dirt * 0.7);
+                    float lit = SunShadow(uv);
+                    float3 gloss = (env * f + _RW_SunColor.rgb * s.g * lit) * (1 - dirt * 0.7);
                     if (_RW_Debug > 6.5)
                         return float4(gloss * m, m);
+                    if (IsBody(tex2Dlod(_RW_IdTex, float4(uv, 0, 0)).r))
+                    {
+                        // no interior behind this pane: a dark body lit from outside, which
+                        // covers the painted window whole
+                        float3 body = _RW_BodyColor.rgb * (_RW_BodyAmbient.rgb + _RW_SunLight.rgb * lit);
+                        return float4((body * (1 - f) + gloss) * m, m);
+                    }
                     float3 inside = tex2Dlod(_RW_InteriorTex, float4(uv, 0, 0)).rgb * show * _RW_Tint.rgb;
                     // what stays of the picture underneath: the painted window's share,
                     // or through a cut-out the scene's

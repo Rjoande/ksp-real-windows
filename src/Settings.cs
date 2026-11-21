@@ -75,6 +75,8 @@ namespace RealWindows
         public static float glassDirtScale = 3f;         // smudges per metre
         public static bool glassEnvironment = true;      // the glass reflects the scene around the part; false: the painted window is the reflection
         public static int glassEnvironmentSource = GlassEnvironment.SourceAuto;   // Auto (the game's reflection probe when it is on), Probe, Synthetic (a sky/ground gradient)
+        public static int glassOpacity = GlassBody.Transparent;   // what is behind the glass: Transparent (the interior), ReflectionOnly (a dark pane; no interior is drawn)
+        public static Color glassBodyColor = new Color(0.02f, 0.022f, 0.026f, 1f);   // the pane's own colour where no interior shows
 
         // window regions from the hull's textures
         public static int materialMode = 1;              // 0 Off, 1 Assist, 2 Union, 3 Trust
@@ -105,6 +107,7 @@ namespace RealWindows
         public static bool startEnabled = true;          // state at the start of each flight scene
         public static KeyCode debugCycleKey = KeyCode.None;
         public static KeyCode glassCycleKey = KeyCode.None;   // steps through the glass looks in flight: painted reflection, reflected scene, reflected gradient
+        public static KeyCode glassOpacityKey = KeyCode.None; // switches glassOpacity in flight: Transparent, ReflectionOnly
         public static KeyCode alignmentDumpKey = KeyCode.None;
         public static bool verboseLogging = false;
         public static float flipY = 0f;                  // 0 auto, 1 force-flip sampling of our textures
@@ -224,6 +227,15 @@ namespace RealWindows
                     if (c.Length >= 3)
                         glassTint = new Color(P(c[0]), P(c[1]), P(c[2]), 1f);
                 }
+                s = n.GetValue("glassBodyColor");
+                if (!string.IsNullOrEmpty(s))
+                {
+                    string[] c = s.Split(',');
+                    if (c.Length >= 3)
+                        glassBodyColor = new Color(P(c[0]), P(c[1]), P(c[2]), 1f);
+                }
+                if (n.HasValue("glassOpacity"))
+                    glassOpacity = GlassBody.ParseOpacity(n.GetValue("glassOpacity"));
                 s = n.GetValue("excludeParts");
                 if (!string.IsNullOrEmpty(s))
                 {
@@ -236,6 +248,7 @@ namespace RealWindows
                 }
                 debugCycleKey = Key(n, "debugCycleKey", debugCycleKey);
                 glassCycleKey = Key(n, "glassCycleKey", glassCycleKey);
+                glassOpacityKey = Key(n, "glassOpacityKey", glassOpacityKey);
                 string tk = n.GetValue("toggleKey");
                 if (tk != null)
                 {

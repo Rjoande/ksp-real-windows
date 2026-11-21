@@ -32,6 +32,10 @@ float _RW_InsideId;   // the interior the camera is in (0 = none)
 float _RW_IdGroup[128];   // render group per part id, -1 none
 float _RW_SeeNeighbours;
 float _RW_HoleIds[128];   // 1 for parts whose painted windows get depth cut-outs (seeThroughWindows)
+float _RW_BodyIds[128];   // 1 for parts whose panes get a body in place of the interior (reflection-only glass, interior not drawn)
+float4 _RW_BodyColor;     // the pane's own colour
+float4 _RW_BodyAmbient;   // the light on the pane: the scene's ambient light
+float4 _RW_SunLight;      //                        and the sun's
 UNITY_DECLARE_DEPTH_TEXTURE(_RW_InteriorDepth);   // depth of the whole interior render: shell, props, kerbals
 float _RW_HasInteriorDepth;
 
@@ -45,6 +49,12 @@ bool Matches(float a, float b)
     if (ia <= 0 || ib <= 0 || ia >= 128 || ib >= 128) return false;
     float ga = _RW_IdGroup[ia], gb = _RW_IdGroup[ib];
     return ga >= 0 && abs(ga - gb) < 0.5;
+}
+
+bool IsBody(float id)
+{
+    int i = (int)(id + 0.5);
+    return i > 0 && i < 128 && _RW_BodyIds[i] > 0.5;
 }
 
 struct v2f
@@ -89,7 +99,8 @@ float InteriorEye(float2 uv)
 //     2 interior: colour-render depth (props, kerbals), 3 interior: shell surface,
 //     4 another part's interior not drawn with this one, 5 another window in the
 //     same render, 6 real glass (scene as it is), 7 painted glass (needs the scene),
-//     8 interior (no see-through test), 9 no interior behind (probe window)
+//     8 interior (no see-through test), 9 no interior behind (probe window),
+//     10 glass with a body (no interior shown)
 float4 ClassifyEx(float2 uv, out float br)
 {
     br = 0;
@@ -102,6 +113,14 @@ float4 ClassifyEx(float2 uv, out float br)
     {
         float sd = LinearEyeDepth(SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, uv));
         if (sd < hull.y - _RW_SceneEps) { br = 1; return 0; }   // something in front (terrain...)
+    }
+    if (IsBody(hull.x))
+    {
+        // the pane itself, nothing through it: no interior image, no cut-out
+        if (hull.w > 3.5) { br = 6; return 0; }              // real glass stays as the main render drew it
+        if (hull.z < 1.5 && (front.y <= 0 || front.y < hull.y - _RW_HullEps)) { br = 9; return 0; }   // probe window with no interior behind
+        br = 10;
+        return float4(1, 0, 0, hull.x);
     }
     if (hull.z > 1.5 && _RW_SeeThrough > 0.5)
     {
