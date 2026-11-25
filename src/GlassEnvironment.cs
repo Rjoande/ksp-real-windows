@@ -34,6 +34,7 @@ namespace RealWindows
         private static readonly int PID_Horizon = Shader.PropertyToID("_RW_EnvHorizon");
         private static readonly int PID_Ground = Shader.PropertyToID("_RW_EnvGround");
         private static readonly int PID_Light = Shader.PropertyToID("_RW_EnvLight");
+        private static readonly int PID_ProbeLight = Shader.PropertyToID("_RW_EnvProbeLight");
 
         private static int lastUsed = -1;
 
@@ -107,9 +108,12 @@ namespace RealWindows
             cb.SetGlobalColor(PID_Horizon, Color.Lerp(Space, Horizon, air));
             cb.SetGlobalColor(PID_Ground, Color.Lerp(Planet, Ground, air));
             // the gradient has no light of its own: it follows the sun (which the game
-            // fades out at night), never quite to black
+            // fades out at night) down to a floor; the probe's image darkens by itself
+            // and takes a factor only if it is asked to
             Color sc = sun != null ? sun.color * sun.intensity : Color.white;
-            cb.SetGlobalFloat(PID_Light, Mathf.Lerp(0.1f, 1f, Mathf.Clamp01(Mathf.Max(sc.r, Mathf.Max(sc.g, sc.b)))));
+            float day = Mathf.Clamp01(Mathf.Max(sc.r, Mathf.Max(sc.g, sc.b)));
+            cb.SetGlobalFloat(PID_Light, Mathf.Lerp(GlassLook.nightReflection, 1f, day));
+            cb.SetGlobalFloat(PID_ProbeLight, Mathf.Lerp(GlassLook.nightProbe, 1f, day));
         }
     }
 }

@@ -48,7 +48,7 @@ namespace RealWindows
         public static void Apply(Material mat, Color sunLight, float[] ids)
         {
             mat.SetFloatArray(PID_Ids, ids);
-            mat.SetColor(PID_Color, RWSettings.glassBodyColor);
+            mat.SetColor(PID_Color, GlassLook.BodyColor);
             // the composite runs without a light context: the light that falls on the
             // pane is handed over (the sun's own shadow comes from GlassShadows)
             mat.SetColor(PID_Ambient, RenderSettings.ambientLight);

@@ -103,6 +103,8 @@ Shader "Hidden/RealWindows/Hull"
             float3 _RW_SunDir;      // world, towards the sun
             float _RW_SunLit;       // 0 when this part's vessel is in a planet's shadow
             float _RW_Smoothness;
+            float _RW_GlassF0;            // reflectance facing the camera
+            float _RW_GlassFresnelPower;  // how late it rises towards grazing angles
             float _RW_DirtScale;
             float _RW_GlassModel;   // 1: the glass reflects the scene (target 2) and the sun as a GGX highlight
 
@@ -175,13 +177,13 @@ Shader "Hidden/RealWindows/Hull"
                 float3 v = normalize(_RW_CamPos - i.world);
                 if (dot(n, v) < 0) n = -n;
                 float c = saturate(dot(n, v));
-                float fresnel = 0.04 + 0.96 * pow(1 - c, 5);
+                float fresnel = _RW_GlassF0 + (1 - _RW_GlassF0) * pow(1 - c, _RW_GlassFresnelPower);
                 float3 l = normalize(_RW_SunDir);
                 float glint;
                 if (_RW_GlassModel > 0.5)
                 {
                     env = RWEnvironment(reflect(-v, n), 1 - _RW_Smoothness);
-                    glint = RWSunHighlight(n, v, l, 1 - _RW_Smoothness, 0.04);
+                    glint = RWSunHighlight(n, v, l, 1 - _RW_Smoothness, _RW_GlassF0);
                 }
                 else
                 {

@@ -507,7 +507,6 @@ namespace RealWindows
             cbPasses.SetViewProjectionMatrices(view, proj);
             cbPasses.SetGlobalVector("_RW_CamPos", main.transform.position);
             cbPasses.SetGlobalVector("_RW_SunDir", sun != null ? -sun.transform.forward : Vector3.up);
-            cbPasses.SetGlobalFloat("_RW_Smoothness", RWSettings.glassSmoothness);
             cbPasses.SetGlobalFloat("_RW_DirtScale", RWSettings.glassDirtScale);
             cbPasses.SetGlobalFloat("_RW_OpenFraction", RWSettings.probeOpenFraction);
             cbPasses.SetGlobalFloat("_RW_WallMargin", RWSettings.probeWallMargin);
@@ -735,6 +734,8 @@ namespace RealWindows
             mat.SetFloat("_RW_UseSceneDepth", sceneDepth && RWSettings.useSceneDepth ? 1f : 0f);
             mat.SetFloat("_RW_Transmission", RWSettings.transmission);
             mat.SetColor("_RW_Tint", RWSettings.glassTint);
+            if (glassEnv)
+                GlassLook.ApplyComposite(mat);
             mat.SetFloat("_RW_Feather", RWSettings.feather);
             mat.SetFloat("_RW_Debug", RWSettings.debugMode);
             mat.SetFloat("_RW_FlipY", RWSettings.flipY);
@@ -1799,6 +1800,9 @@ namespace RealWindows
                 cbPasses.SetGlobalFloat(PID_PartId, p.frameId);
                 bool confident = p.frameId > 0 && p.HasConfidentWindows;
                 cbPasses.SetGlobalFloat("_RW_SunLit", p.part.vessel != null && p.part.vessel.directSunlight ? 1f : 0f);
+                // its panes have a body where no interior shows behind them
+                GlassLook.ApplyHull(cbPasses, RWSettings.glassEnvironment && envRT != null,
+                    p.glassOnly || (GlassBody.AllParts && p.frameId > 0));
                 if (p.glassOnly)
                 {
                     // no interior, so no probe: its masks and the author's glass decide

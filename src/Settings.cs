@@ -76,7 +76,6 @@ namespace RealWindows
         public static bool glassEnvironment = true;      // the glass reflects the scene around the part; false: the painted window is the reflection
         public static int glassEnvironmentSource = GlassEnvironment.SourceAuto;   // Auto (the game's reflection probe when it is on), Probe, Synthetic (a sky/ground gradient)
         public static int glassOpacity = GlassBody.Transparent;   // what is behind the glass: Transparent (the interior), ReflectionOnly (a dark pane; no interior is drawn)
-        public static Color glassBodyColor = new Color(0.02f, 0.022f, 0.026f, 1f);   // the pane's own colour where no interior shows
 
         // window regions from the hull's textures
         public static int materialMode = 1;              // 0 Off, 1 Assist, 2 Union, 3 Trust
@@ -108,6 +107,9 @@ namespace RealWindows
         public static KeyCode debugCycleKey = KeyCode.None;
         public static KeyCode glassCycleKey = KeyCode.None;   // steps through the glass looks in flight: painted reflection, reflected scene, reflected gradient
         public static KeyCode glassOpacityKey = KeyCode.None; // switches glassOpacity in flight: Transparent, ReflectionOnly
+        public static KeyCode glassProfileKey = KeyCode.None; // steps through the glass profiles in flight
+        public static KeyCode glassColorKey = KeyCode.None;   // steps through the glass colours in flight
+        public static KeyCode glassReloadKey = KeyCode.None;  // reads the glass keys of settings.cfg again in flight (tuning without a restart)
         public static KeyCode alignmentDumpKey = KeyCode.None;
         public static bool verboseLogging = false;
         public static float flipY = 0f;                  // 0 auto, 1 force-flip sampling of our textures
@@ -181,17 +183,8 @@ namespace RealWindows
                 B(n, "seeThroughWindows", ref seeThroughWindows);
                 I(n, "seeThroughHoleParts", ref seeThroughHoleParts);
                 I(n, "maxUvTiles", ref maxUvTiles);
-                F(n, "transmission", ref transmission);
                 F(n, "feather", ref feather);
-                F(n, "glassReflection", ref glassReflection);
-                F(n, "glassSpecular", ref glassSpecular);
-                F(n, "glassSmoothness", ref glassSmoothness);
-                F(n, "glassDirt", ref glassDirt);
-                F(n, "glassDirtScale", ref glassDirtScale);
-                B(n, "glassEnvironment", ref glassEnvironment);
-                string ges = n.GetValue("glassEnvironmentSource");
-                if (!string.IsNullOrEmpty(ges))
-                    glassEnvironmentSource = GlassEnvironment.ParseSource(ges);
+                LoadGlass(n);
                 string mm = n.GetValue("materialMode");
                 if (!string.IsNullOrEmpty(mm))
                 {
@@ -220,23 +213,7 @@ namespace RealWindows
                 B(n, "verboseLogging", ref verboseLogging);
                 F(n, "flipY", ref flipY);
 
-                string s = n.GetValue("glassTint");
-                if (!string.IsNullOrEmpty(s))
-                {
-                    string[] c = s.Split(',');
-                    if (c.Length >= 3)
-                        glassTint = new Color(P(c[0]), P(c[1]), P(c[2]), 1f);
-                }
-                s = n.GetValue("glassBodyColor");
-                if (!string.IsNullOrEmpty(s))
-                {
-                    string[] c = s.Split(',');
-                    if (c.Length >= 3)
-                        glassBodyColor = new Color(P(c[0]), P(c[1]), P(c[2]), 1f);
-                }
-                if (n.HasValue("glassOpacity"))
-                    glassOpacity = GlassBody.ParseOpacity(n.GetValue("glassOpacity"));
-                s = n.GetValue("excludeParts");
+                string s = n.GetValue("excludeParts");
                 if (!string.IsNullOrEmpty(s))
                 {
                     foreach (string e in s.Split('|', ','))
@@ -249,6 +226,9 @@ namespace RealWindows
                 debugCycleKey = Key(n, "debugCycleKey", debugCycleKey);
                 glassCycleKey = Key(n, "glassCycleKey", glassCycleKey);
                 glassOpacityKey = Key(n, "glassOpacityKey", glassOpacityKey);
+                glassProfileKey = Key(n, "glassProfileKey", glassProfileKey);
+                glassColorKey = Key(n, "glassColorKey", glassColorKey);
+                glassReloadKey = Key(n, "glassReloadKey", glassReloadKey);
                 string tk = n.GetValue("toggleKey");
                 if (tk != null)
                 {
@@ -271,6 +251,45 @@ namespace RealWindows
             }
         }
 
+        // The look of the glass: everything here is read by the passes every frame,
+        // so it can be read again in flight.
+        private static void LoadGlass(ConfigNode n)
+        {
+            F(n, "transmission", ref transmission);
+            F(n, "glassReflection", ref glassReflection);
+            F(n, "glassSpecular", ref glassSpecular);
+            F(n, "glassSmoothness", ref glassSmoothness);
+            F(n, "glassDirt", ref glassDirt);
+            F(n, "glassDirtScale", ref glassDirtScale);
+            B(n, "glassEnvironment", ref glassEnvironment);
+            string ges = n.GetValue("glassEnvironmentSource");
+            if (!string.IsNullOrEmpty(ges))
+                glassEnvironmentSource = GlassEnvironment.ParseSource(ges);
+            C(n, "glassTint", ref glassTint);
+            if (n.HasValue("glassOpacity"))
+                glassOpacity = GlassBody.ParseOpacity(n.GetValue("glassOpacity"));
+            GlassLook.Load(n);
+        }
+
+        // The glass keys of settings.cfg, read again. False when the file can't be read.
+        public static bool ReloadGlass()
+        {
+            try
+            {
+                ConfigNode root = ConfigNode.Load(Path.Combine(RootPath, "settings.cfg"));
+                ConfigNode n = root != null ? root.GetNode("RealWindows") : null;
+                if (n == null)
+                    return false;
+                LoadGlass(n);
+                return true;
+            }
+            catch (Exception e)
+            {
+                RWLog.Error("settings.cfg failed to load again: {0}", e.Message);
+                return false;
+            }
+        }
+
         // KSP's runtime Part.name replaces the cfg name's underscores with dots.
         public static string NormalizePartName(string name)
         {
@@ -282,12 +301,24 @@ namespace RealWindows
             return excludeParts.Count > 0 && excludeParts.Contains(NormalizePartName(p.name));
         }
 
-        private static float P(string s)
+        // "r, g, b" in 0-1; false when the key is missing or malformed
+        internal static bool C(ConfigNode n, string k, ref Color v)
         {
-            return float.Parse(s.Trim(), CultureInfo.InvariantCulture);
+            string s = n.GetValue(k);
+            if (string.IsNullOrEmpty(s))
+                return false;
+            string[] c = s.Split(',');
+            float r, g, b;
+            if (c.Length < 3
+                || !float.TryParse(c[0].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out r)
+                || !float.TryParse(c[1].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out g)
+                || !float.TryParse(c[2].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out b))
+                return false;
+            v = new Color(r, g, b, 1f);
+            return true;
         }
 
-        private static void F(ConfigNode n, string k, ref float v)
+        internal static void F(ConfigNode n, string k, ref float v)
         {
             string s = n.GetValue(k);
             float r;

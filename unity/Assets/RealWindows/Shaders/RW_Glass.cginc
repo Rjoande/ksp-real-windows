@@ -15,6 +15,7 @@ float4 _RW_EnvSky;
 float4 _RW_EnvHorizon;
 float4 _RW_EnvGround;
 float _RW_EnvLight;           // the gradient's brightness, from the sun
+float _RW_EnvProbeLight;      // a factor on the cube map (1 by day)
 
 // mip levels a reflection probe spreads its roughness over (Unity's UNITY_SPECCUBE_LOD_STEPS)
 #define RW_ENV_LOD_STEPS 6
@@ -34,7 +35,7 @@ float3 RWSyntheticEnvironment(float3 dir)
 float3 RWEnvironment(float3 dir, float perceptualRoughness)
 {
     float mip = perceptualRoughness * (1.7 - 0.7 * perceptualRoughness) * RW_ENV_LOD_STEPS;
-    float3 probe = DecodeHDR(texCUBElod(_RW_EnvCube, float4(dir, mip)), _RW_EnvCube_HDR);
+    float3 probe = DecodeHDR(texCUBElod(_RW_EnvCube, float4(dir, mip)), _RW_EnvCube_HDR) * _RW_EnvProbeLight;
     return lerp(probe, RWSyntheticEnvironment(dir), _RW_EnvSynthetic);
 }
 

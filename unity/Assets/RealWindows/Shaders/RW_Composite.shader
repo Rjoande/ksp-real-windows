@@ -27,6 +27,9 @@
 // Glass with a body (_RW_BodyIds: reflection-only glass, parts drawn without their
 // interior): the bracket is the pane's own dark colour lit by the ambient light and
 // the sun, and nothing of the painted window is left.
+// The glass profile and colour (GlassLook.cs) set F0 and the Fresnel exponent in the
+// hull pass, and here the reflectance factor, the colour's share of the reflection
+// (_RW_GlassRefl, _RW_BodyRefl for panes with a body), the transmission and the tint.
 //
 // See-through (_RW_SeeThrough): where a trusted window's view leaves the cabin
 // before meeting an interior surface (out through its far window), the hull layer
@@ -218,14 +221,19 @@ Shader "Hidden/RealWindows/Composite"
                 float dirt = saturate(s.b * _RW_Dirt);
                 if (_RW_GlassModel > 0.5)
                 {
-                    float f = saturate(s.r * _RW_Reflection);
+                    // the profile's share: how strongly the pane reflects and how much
+                    // of the glass colour the reflection takes
+                    bool body = IsBody(tex2Dlod(_RW_IdTex, float4(uv, 0, 0)).r);
+                    float2 refl = body ? _RW_BodyRefl.xy : _RW_GlassRefl.xy;
+                    float f = saturate(s.r * refl.x);
                     float t0 = _RW_Transmission * (1 - dirt * 0.6);
                     float3 env = tex2Dlod(_RW_EnvTex, float4(uv, 0, 0)).rgb;
                     float lit = SunShadow(uv);
-                    float3 gloss = (env * f + _RW_SunColor.rgb * s.g * lit) * (1 - dirt * 0.7);
+                    float3 gloss = (env * f + _RW_SunColor.rgb * s.g * lit)
+                                 * lerp(float3(1, 1, 1), _RW_GlassHue.rgb, refl.y) * (1 - dirt * 0.7);
                     if (_RW_Debug > 6.5)
                         return float4(gloss * m, m);
-                    if (IsBody(tex2Dlod(_RW_IdTex, float4(uv, 0, 0)).r))
+                    if (body)
                     {
                         // no interior behind this pane: a dark body lit from outside, which
                         // covers the painted window whole

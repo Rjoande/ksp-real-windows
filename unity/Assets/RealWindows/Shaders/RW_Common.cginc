@@ -34,6 +34,9 @@ float _RW_SeeNeighbours;
 float _RW_HoleIds[128];   // 1 for parts whose painted windows get depth cut-outs (seeThroughWindows)
 float _RW_BodyIds[128];   // 1 for parts whose panes get a body in place of the interior (reflection-only glass, interior not drawn)
 float4 _RW_BodyColor;     // the pane's own colour
+float4 _RW_GlassRefl;     // reflective glass, panes over an interior: x reflectance factor, y share of the colour in the reflection
+float4 _RW_BodyRefl;      //                   panes with a body
+float4 _RW_GlassHue;      // the glass colour at full brightness (white: none)
 float4 _RW_BodyAmbient;   // the light on the pane: the scene's ambient light
 float4 _RW_SunLight;      //                        and the sun's
 UNITY_DECLARE_DEPTH_TEXTURE(_RW_InteriorDepth);   // depth of the whole interior render: shell, props, kerbals

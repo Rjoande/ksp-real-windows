@@ -50,6 +50,9 @@ namespace RealWindows
             ok = true;
             switchedOn = RWSettings.startEnabled;
             RWLog.Info("v{0} active in flight ({1}, toggle key {2})", AssemblyInfo.Version, switchedOn ? "on" : "off", RWSettings.toggleKey);
+            if (RWSettings.glassEnvironment)
+                RWLog.Info("glass: profile {0}, colour {1}, opacity {2} ({3} colour space)", GlassLook.ProfileName, GlassLook.ColourName,
+                    GlassBody.OpacityName(RWSettings.glassOpacity), QualitySettings.activeColorSpace);
         }
 
         public void OnDestroy()
@@ -441,6 +444,19 @@ namespace RealWindows
                 RWSettings.glassOpacity = RWSettings.glassOpacity == GlassBody.Transparent ? GlassBody.ReflectionOnly : GlassBody.Transparent;
                 ScreenMessages.PostScreenMessage("RealWindows glass opacity: " + GlassBody.OpacityName(RWSettings.glassOpacity)
                     + (RWSettings.glassEnvironment ? "" : " (no effect: painted window as the reflection)"), 2f, ScreenMessageStyle.UPPER_CENTER);
+            }
+            if (RWSettings.glassProfileKey != KeyCode.None && Input.GetKeyDown(RWSettings.glassProfileKey))
+                ScreenMessages.PostScreenMessage("RealWindows glass profile: " + GlassLook.NextProfile(), 2f, ScreenMessageStyle.UPPER_CENTER);
+            if (RWSettings.glassColorKey != KeyCode.None && Input.GetKeyDown(RWSettings.glassColorKey))
+                ScreenMessages.PostScreenMessage("RealWindows glass colour: " + GlassLook.NextColour(), 2f, ScreenMessageStyle.UPPER_CENTER);
+            if (RWSettings.glassReloadKey != KeyCode.None && Input.GetKeyDown(RWSettings.glassReloadKey))
+            {
+                bool ok = RWSettings.ReloadGlass();
+                string look = GlassLook.ProfileName + ", " + GlassLook.ColourName + ", " + GlassBody.OpacityName(RWSettings.glassOpacity);
+                ScreenMessages.PostScreenMessage(ok ? "RealWindows glass settings read again: " + look : "RealWindows: settings.cfg could not be read",
+                    2f, ScreenMessageStyle.UPPER_CENTER);
+                if (ok)
+                    RWLog.Info("glass settings read again ({0})", look);
             }
             if (RWSettings.alignmentDumpKey != KeyCode.None && Input.GetKeyDown(RWSettings.alignmentDumpKey))
                 DumpAlignment();
